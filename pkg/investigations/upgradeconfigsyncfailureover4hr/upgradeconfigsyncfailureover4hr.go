@@ -3,10 +3,11 @@ package upgradeconfigsyncfailureover4hr
 
 import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
+	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/check/ocm"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
-	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	ocmlib "github.com/openshift/configuration-anomaly-detection/pkg/ocm"
 	"github.com/openshift/configuration-anomaly-detection/pkg/pullsecret"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 )
@@ -21,23 +22,22 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	}
 	notes := notewriter.New("UpgradeConfigSyncFailureOver4Hr", logging.RawLogger)
 
+	// Run OCM user ban check
 	logging.Infof("Checking if user is Banned.")
-	userBannedStatus, userBannedNotes, err := ocm.CheckIfUserBanned(r.OcmClient, r.Cluster)
-	if err != nil {
-		notes.AppendWarning("encountered an issue when checking if the cluster owner is banned: %s\nPlease investigate.", err)
+	userBanCheck := ocm.NewUserBanCheck()
+	passed, err := userBanCheck.Run(r)
+	userBanCheck.AppendToNotes(notes, passed, err)
+
+	if !passed || err != nil {
 		result.Actions = append(
 			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
-			executor.Escalate("Failed to check if user is banned"),
+			executor.Escalate("User validation failed"),
 		)
 		return result, nil
 	}
-	if userBannedStatus {
-		notes.AppendWarning("%s", userBannedNotes)
-	} else {
-		notes.AppendSuccess("User is not banned.")
-	}
-	user, err := ocm.GetCreatorFromCluster(r.OcmClient.GetConnection(), r.Cluster)
-	logging.Infof("User ID is: %v", user.ID())
+
+	// Get user for email validation (needed for pull secret check)
+	user, err := ocmlib.GetCreatorFromCluster(r.OcmClient.GetConnection(), r.Cluster)
 	if err != nil {
 		notes.AppendWarning("Failed getting cluster creator from ocm: %s", err)
 		result.Actions = append(
@@ -46,6 +46,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		)
 		return result, nil
 	}
+	logging.Infof("User ID is: %v", user.ID())
 
 	r, err = rb.WithK8sClient().Build()
 	if err != nil {

@@ -7,11 +7,11 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
+	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/check/ocm"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/networkverifier"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
-	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
 	"k8s.io/apimachinery/pkg/fields"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -26,25 +26,17 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	}
 	notes := notewriter.New(r.Name, logging.RawLogger)
 
-	user, err := ocm.GetCreatorFromCluster(r.OcmClient.GetConnection(), r.Cluster)
-	if err != nil {
-		notes.AppendWarning("encountered an issue when checking if the cluster owner is banned: %s", err)
-		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
-			executor.Escalate("Failed to check user ban status - manual investigation required"),
-		)
-		return result, nil
-	}
+	// Run OCM user ban check
+	userBanCheck := ocm.NewUserBanCheck()
+	passed, err := userBanCheck.Run(r)
+	userBanCheck.AppendToNotes(notes, passed, err)
 
-	if user.Banned() {
-		notes.AppendWarning("User is banned: %s\nBan description: %s\nPlease open a proactive case, so that MCS can resolve the ban or organize a ownership transfer.", user.BanCode(), user.BanDescription())
+	if !passed || err != nil {
 		result.Actions = append(
 			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
-			executor.Escalate("User is banned - proactive case required"),
+			executor.Escalate("User validation failed - manual investigation required"),
 		)
 		return result, nil
-	} else {
-		notes.AppendSuccess("User is not banned.")
 	}
 
 	r, err = rb.WithK8sClient().Build()
