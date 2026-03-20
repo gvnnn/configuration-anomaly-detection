@@ -10,26 +10,25 @@ import (
 
 // MockCheck for testing
 type MockCheck struct {
-	name   string
-	passed bool
-	err    error
+	name string
+	err  error
 }
 
 func (m *MockCheck) Name() string {
 	return m.name
 }
 
-func (m *MockCheck) Run(resources *investigation.Resources) (bool, error) {
-	return m.passed, m.err
+func (m *MockCheck) Run(resources *investigation.Resources) error {
+	return m.err
 }
 
-func (m *MockCheck) AppendToNotes(notes *notewriter.NoteWriter, passed bool, err error) {
+func (m *MockCheck) AppendToNotes(notes *notewriter.NoteWriter, err error) {
 	// No-op for testing - tests don't verify note output
 }
 
 func TestRunner_SingleCheck_Pass(t *testing.T) {
 	runner := NewRunner()
-	runner.Add(&MockCheck{name: "test_check", passed: true, err: nil})
+	runner.Add(&MockCheck{name: "test_check", err: nil})
 
 	runner.Run(nil)
 
@@ -46,7 +45,7 @@ func TestRunner_SingleCheck_Pass(t *testing.T) {
 		t.Errorf("Expected 1 result, got %d", len(results))
 	}
 
-	if !results[0].Passed {
+	if !results[0].Passed() {
 		t.Error("Expected check to pass")
 	}
 }
@@ -54,7 +53,7 @@ func TestRunner_SingleCheck_Pass(t *testing.T) {
 func TestRunner_SingleCheck_Fail(t *testing.T) {
 	testErr := errors.New("check failed")
 	runner := NewRunner()
-	runner.Add(&MockCheck{name: "test_check", passed: false, err: testErr})
+	runner.Add(&MockCheck{name: "test_check", err: testErr})
 
 	runner.Run(nil)
 
@@ -71,7 +70,7 @@ func TestRunner_SingleCheck_Fail(t *testing.T) {
 		t.Errorf("Expected 1 result, got %d", len(results))
 	}
 
-	if results[0].Passed {
+	if results[0].Passed() {
 		t.Error("Expected check to fail")
 	}
 
@@ -82,9 +81,9 @@ func TestRunner_SingleCheck_Fail(t *testing.T) {
 
 func TestRunner_MultipleChecks(t *testing.T) {
 	runner := NewRunner()
-	runner.Add(&MockCheck{name: "check1", passed: true, err: nil})
-	runner.Add(&MockCheck{name: "check2", passed: true, err: nil})
-	runner.Add(&MockCheck{name: "check3", passed: false, err: errors.New("failed")})
+	runner.Add(&MockCheck{name: "check1", err: nil})
+	runner.Add(&MockCheck{name: "check2", err: nil})
+	runner.Add(&MockCheck{name: "check3", err: errors.New("failed")})
 
 	runner.Run(nil)
 
@@ -102,22 +101,22 @@ func TestRunner_MultipleChecks(t *testing.T) {
 	}
 
 	// Check individual results
-	if !results[0].Passed {
+	if !results[0].Passed() {
 		t.Error("Expected check1 to pass")
 	}
-	if !results[1].Passed {
+	if !results[1].Passed() {
 		t.Error("Expected check2 to pass")
 	}
-	if results[2].Passed {
+	if results[2].Passed() {
 		t.Error("Expected check3 to fail")
 	}
 }
 
 func TestRunner_Results_Order(t *testing.T) {
 	runner := NewRunner()
-	runner.Add(&MockCheck{name: "first", passed: true, err: nil})
-	runner.Add(&MockCheck{name: "second", passed: true, err: nil})
-	runner.Add(&MockCheck{name: "third", passed: true, err: nil})
+	runner.Add(&MockCheck{name: "first", err: nil})
+	runner.Add(&MockCheck{name: "second", err: nil})
+	runner.Add(&MockCheck{name: "third", err: nil})
 
 	runner.Run(nil)
 
@@ -139,8 +138,8 @@ func TestRunner_Results_Order(t *testing.T) {
 		if results[i].Check.Name() != exp.name {
 			t.Errorf("Result[%d]: expected name %q, got %q", i, exp.name, results[i].Check.Name())
 		}
-		if results[i].Passed != exp.passed {
-			t.Errorf("Result[%d]: expected passed=%v, got %v", i, exp.passed, results[i].Passed)
+		if results[i].Passed() != exp.passed {
+			t.Errorf("Result[%d]: expected passed=%v, got %v", i, exp.passed, results[i].Passed())
 		}
 	}
 }
@@ -152,9 +151,9 @@ func TestRunner_Add_Variadic(t *testing.T) {
 
 	// Add multiple checks at once
 	runner.Add(
-		&MockCheck{name: "check1", passed: true, err: nil},
-		&MockCheck{name: "check2", passed: true, err: nil},
-		&MockCheck{name: "check3", passed: false, err: failErr},
+		&MockCheck{name: "check1", err: nil},
+		&MockCheck{name: "check2", err: nil},
+		&MockCheck{name: "check3", err: failErr},
 	)
 
 	runner.Run(nil)
@@ -178,8 +177,8 @@ func TestRunner_Add_Variadic(t *testing.T) {
 		if results[i].Check.Name() != exp.name {
 			t.Errorf("Result[%d]: expected name %q, got %q", i, exp.name, results[i].Check.Name())
 		}
-		if results[i].Passed != exp.passed {
-			t.Errorf("Result[%d]: expected passed=%v, got %v", i, exp.passed, results[i].Passed)
+		if results[i].Passed() != exp.passed {
+			t.Errorf("Result[%d]: expected passed=%v, got %v", i, exp.passed, results[i].Passed())
 		}
 		if results[i].Error != exp.err {
 			t.Errorf("Result[%d]: expected error %v, got %v", i, exp.err, results[i].Error)

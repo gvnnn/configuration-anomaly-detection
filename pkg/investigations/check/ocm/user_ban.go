@@ -25,7 +25,7 @@ func (c *UserBanCheck) Name() string {
 	return "ocm_user_ban"
 }
 
-func (c *UserBanCheck) AppendToNotes(notes *notewriter.NoteWriter, passed bool, err error) {
+func (c *UserBanCheck) AppendToNotes(notes *notewriter.NoteWriter, err error) {
 	if err != nil {
 		// Check for typed error (user banned)
 		var bannedErr *UserBannedError
@@ -39,33 +39,32 @@ func (c *UserBanCheck) AppendToNotes(notes *notewriter.NoteWriter, passed bool, 
 		return
 	}
 
-	if passed {
-		notes.AppendSuccess("[%s] User is not banned", c.Name())
-	}
+	// nil error means check passed
+	notes.AppendSuccess("[%s] User is not banned", c.Name())
 }
 
-func (c *UserBanCheck) Run(resources *investigation.Resources) (bool, error) {
+func (c *UserBanCheck) Run(resources *investigation.Resources) error {
 	if resources.Cluster == nil {
-		return false, fmt.Errorf("cluster resource is required")
+		return fmt.Errorf("cluster resource is required")
 	}
 
 	// Get cluster creator
 	user, err := getCreatorFromCluster(resources.OcmClient.GetConnection(), resources.Cluster)
 	if err != nil {
 		// Infrastructure error - OCM API failure
-		return false, fmt.Errorf("failed to get cluster creator: %w", err)
+		return fmt.Errorf("failed to get cluster creator: %w", err)
 	}
 
 	// Check if user is banned
 	if user.Banned() {
-		return false, &UserBannedError{
+		return &UserBannedError{
 			UserID:         user.ID(),
 			BanCode:        user.BanCode(),
 			BanDescription: user.BanDescription(),
 		}
 	}
 
-	return true, nil // Check passed - user not banned
+	return nil // Check passed - user not banned
 }
 
 // getCreatorFromCluster retrieves the cluster creator from OCM

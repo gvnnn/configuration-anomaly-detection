@@ -14,13 +14,13 @@ type Check interface {
 	Name() string
 
 	// Run executes the check and returns:
-	// - (true, nil): check passed
-	// - (false, CustomError): check failed, error contains typed details
-	// - (false, error): infrastructure/execution error
-	Run(resources *investigation.Resources) (bool, error)
+	// - nil: check passed
+	// - CustomError: check failed, error contains typed details
+	// - error: infrastructure/execution error
+	Run(resources *investigation.Resources) error
 
 	// AppendToNotes formats the check result and appends it to notes.
 	// The check implementation knows best how to format its own results,
 	// including extracting details from typed errors.
-	AppendToNotes(notes *notewriter.NoteWriter, passed bool, err error)
+	AppendToNotes(notes *notewriter.NoteWriter, err error)
 }

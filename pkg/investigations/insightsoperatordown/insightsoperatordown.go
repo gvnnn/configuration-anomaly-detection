@@ -28,10 +28,10 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 
 	// Run OCM user ban check
 	userBanCheck := ocm.NewUserBanCheck()
-	passed, err := userBanCheck.Run(r)
-	userBanCheck.AppendToNotes(notes, passed, err)
+	err = userBanCheck.Run(r)
+	userBanCheck.AppendToNotes(notes, err)
 
-	if !passed || err != nil {
+	if err != nil {
 		result.Actions = append(
 			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
 			executor.Escalate("User validation failed - manual investigation required"),
