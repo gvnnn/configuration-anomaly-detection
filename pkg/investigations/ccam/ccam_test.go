@@ -4,7 +4,11 @@ import (
 	"errors"
 	"testing"
 
-	investigation "github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
+	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
+	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
+	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
+	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 )
 
 func TestEvaluateRandomError(t *testing.T) {
@@ -28,54 +32,50 @@ func TestEvaluateRandomError(t *testing.T) {
 	}
 }
 
-func TestCustomerRemovedPermissions(t *testing.T) {
+func TestActions(t *testing.T) {
 	tests := []struct {
-		name          string
-		errorMessage  string
-		expectedMatch bool
+		name            string
+		err             error
+		clusterState    cmv1.ClusterState
+		expectedActions []types.Action
 	}{
 		{
-			name:          "Matching error 1",
-			errorMessage:  "unable to query aws credentials from backplane: failed to determine if cluster is using isolated backlpane access: failed to get sts support jump role ARN for cluster 28testqvq0jpo1hsrch6gvbc0123test: failed to get STS Support Jump Role for cluster 28testqvq0jpo1hsrch6gvbc0qgqtest, status is 404, identifier is '404', code is 'CLUSTERS-MGMT-404' and operation identifier is 'teste1d1-3844-46f7-82d4-643c5aeeca53': Failed to find trusted relationship to support role 'RH-Technical-Support-Access'",
-			expectedMatch: true,
-		},
-		{
-			name:          "Matching error 2",
-			errorMessage:  "unable to query aws credentials from backplane: failed to determine if cluster is using isolated backlpane access: failed to get sts support jump role ARN for cluster test9tm92uu49s29plim5dn1sbc1test: failed to get STS Support Jump Role for cluster test9tm92uu49s29plim5dn1sbc1test, status is 404, identifier is '404', code is 'CLUSTERS-MGMT-404' and operation identifier is 'testf5f3-6591-452f-98cb-3943edf4test': Support role, used with cluster 'test9tm92uu49s29plim5dn1sbc1test', does not exist in the customer's AWS account",
-			expectedMatch: true,
-		},
-		{
-			name:          "Matching error 3",
-			errorMessage:  "something could not assume support role in customer's account: AccessDenied: something",
-			expectedMatch: true,
-		},
-		{
-			name:          "Matching error 4",
-			errorMessage:  "unable to query aws credentials from backplane: failed to determine if cluster is using isolated backlpane access: failed to get sts support jump role ARN for cluster <cluster_id>: failed to get STS Support Jump Role for cluster <cluster_id>, status is 400, identifier is '400', code is 'CLUSTERS-MGMT-400' and operation identifier is '<op_id>': Please make sure IAM role 'arn:aws:iam::<cluster_aws_account_id>:role/ManagedOpenShift-Installer-Role' exists, and add 'arn:aws:iam::<ocm_aws_account_id>:role/RH-Managed-OpenShift-Installer' to the trust policy on IAM role 'arn:aws:iam::<cluster_aws_account_id>:role/ManagedOpenShift-Installer-Role': Failed to assume role: User: arn:aws:sts::<ocm_aws_account_id>:assumed-role/RH-Managed-OpenShift-Installer/OCM is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::<cluster_aws_account_id>:role/ManagedOpenShift-Installer-Role",
-			expectedMatch: true,
-		},
-		{
-			name:          "Matching error 5",
-			errorMessage:  "unable to query aws credentials from backplane: failed to determine if cluster is using isolated backlpane access: failed to get sts support jump role ARN for cluster <cluster_id>: failed to get STS Support Jump Role for cluster <cluster_id>, status is 400, identifier is '400', code is 'CLUSTERS-MGMT-400' and operation identifier is '<op_id>': Failed to get role: User: arn:aws:sts::<cluster_aws_account_id>:assumed-role/ManagedOpenShift-Installer-Role/OCM is not authorized to perform: iam:GetRole on resource: role ManagedOpenShift-Support-Role because no identity-based policy allows the iam:GetRole action",
-			expectedMatch: true,
-		},
-		{
-			name:          "Matching error 6",
-			errorMessage:  "unable to assume-role chain: could not assume support role in customer's account: operation error STS: AssumeRole, https response error StatusCode: 403, RequestID: <opid>, api error AccessDenied: User: <user> is not authorized to perform: sts:AssumeRole on resource: <role>",
-			expectedMatch: true,
-		},
-		{
-			name:          "Non-matching error",
-			errorMessage:  "Some timeout error",
-			expectedMatch: false,
+			name: "ccam-cluster-is-ready",
+			err: investigation.AWSClientError{
+				Err: errors.New("Failed to find trusted relationship to support role 'RH-Technical-Support-Access'"),
+			},
+			clusterState: cmv1.ClusterStateReady,
+			expectedActions: []types.Action{
+				&executor.LimitedSupportAction{
+					Reason: &ocm.LimitedSupportReason{
+						Summary: "Restore missing cloud credentials",
+						Details: "Your cluster requires you to take action because Red Hat is not able to access the infrastructure with the provided credentials. Please restore the credentials and permissions provided during install",
+					},
+					Context: "CCAM",
+				},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			match := customerRemovedPermissions(tt.errorMessage)
-			if match != tt.expectedMatch {
-				t.Errorf("customerRemovedPermissions() = %v, expectedMatch %v", match, tt.expectedMatch)
+			input := investigation.ResourceBuilderMock{
+				Resources: &investigation.Resources{
+					Cluster:           nil,
+					ClusterDeployment: nil,
+					AwsClient:         nil,
+					OcmClient:         nil,
+					PdClient:          nil,
+				},
+				BuildError: tt.err,
+			}
+
+			inv := CloudCredentialsCheck{}
+
+			res, _ := inv.Run(&input)
+
+			if len(res.Actions) != len(tt.expectedActions) {
+				t.Fatalf("wrong number of actions, want %d, got %d", len(tt.expectedActions), len(res.Actions))
 			}
 		})
 	}

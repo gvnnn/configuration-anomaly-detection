@@ -4,11 +4,10 @@ package ccam
 import (
 	"errors"
 	"fmt"
-	"log"
-	"regexp"
 
 	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
+	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/check"
 	investigation "github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
@@ -26,92 +25,57 @@ var ccamLimitedSupport = &ocm.LimitedSupportReason{
 // the cluster is placed into limited support (if the cluster state allows it), otherwise an error is returned.
 func (c *CloudCredentialsCheck) Run(r investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
 	result := investigation.InvestigationResult{}
-	// Apart from the defaults this investigation requires an AWS client which can fail to build
-	resources, err := r.WithAwsClient().Build()
-	logging.Info("Investigating possible missing cloud credentials...")
-	// Only an AWS error indicates that the permissions are incorrect - all other mean the resource build failed for other reasons
-	awsClientErr := &investigation.AWSClientError{}
-	if errors.As(err, awsClientErr) {
-		logging.Debug("Inspecting AWS error")
-		if customerRemovedPermissions := customerRemovedPermissions(awsClientErr.Err.Error()); !customerRemovedPermissions {
-			// We aren't able to jumpRole because of an error that is different than
-			// a removed support role/policy or removed installer role/policy
-			// This would normally be a backplane failure.
-			logging.Debug("Unhandled AWS error: ", awsClientErr.Error())
-			return result, investigation.WrapInfrastructure(awsClientErr.Err, "AWS/Backplane infrastructure failure")
-		}
+
+	awsCreds := check.AWSCredentials{}
+	err := awsCreds.Check(r)
+
+	crpErr := &check.CustomerRemovedPermissionsErr{}
+	infraErr := &investigation.InfrastructureError{}
+
+	if errors.As(err, infraErr) {
+		// We aren't able to jumpRole because of an error that is different than
+		// a removed support role/policy or removed installer role/policy
+		// This would normally be a backplane failure.
+		return result, err
+	}
+
+	if errors.As(err, crpErr) {
+		clusterState := crpErr.ClusterState
 		result.StopInvestigations = err
-		cluster := resources.Cluster
 
 		// The jumprole failed because of a missing support role/policy:
 		// we need to figure out if we cluster state allows us to set limited support
 		// (the cluster is in a ready state, not uninstalling, installing, etc.)
 
-		logging.Debug("Checking cluster state: ", cluster.State())
-		switch cluster.State() {
-		case cmv1.ClusterStateReady:
-			// Cluster is in functional state but we can't jumprole to it: post limited support
-			result.Actions = []types.Action{
-				executor.NewLimitedSupportAction(ccamLimitedSupport.Summary, ccamLimitedSupport.Details, "CCAM").Build(),
-				executor.Silence("Cluster credentials are missing - limited support added"),
-			}
-			return result, nil
-		case cmv1.ClusterStateUninstalling:
-			// A cluster in uninstalling state should not alert primary - we just skip this
-			result.Actions = []types.Action{
-				executor.Silence(fmt.Sprintf("Skipped adding limited support reason '%s': cluster is already uninstalling", ccamLimitedSupport.Summary)),
-			}
-			return result, nil
-		default:
-			// Anything else is an unknown state to us and/or requires investigation.
-			// E.g. we land here if we run into a CPD alert where credentials were removed (installing state) and don't want to put it in LS yet.
-			result.Actions = []types.Action{
-				executor.Escalate(fmt.Sprintf("Cluster has invalid cloud credentials (support role/policy is missing) and the cluster is in state '%s'. Please investigate.", cluster.State())),
-			}
-			return result, nil
-		}
+		result.Actions = append(result.Actions, remediateState(clusterState)...)
 	}
 	return result, err
 }
 
-// userCausedErrors contains the list of backplane returned error strings that we map to
-// customer modifications/role deletions.
-var userCausedErrors = []string{
-	// OCM can't access the installer role to determine the trust relationship on the support role,
-	// therefore we don't know if it's the isolated access flow or the old flow, e.g.:
-	// status is 404, identifier is '404', code is 'CLUSTERS-MGMT-404' and operation identifier is '<id>': Failed to find trusted relationship to support role 'RH-Technical-Support-Access'
-	// See https://issues.redhat.com/browse/OSD-24270
-	".*Failed to find trusted relationship to support role 'RH-Technical-Support-Access'.*",
+func remediateState(clusterState cmv1.ClusterState) []types.Action {
+	actions := []types.Action{}
 
-	// OCM role can't access the installer role, this happens when customer deletes/modifies the trust policy of the installer role, e.g.:
-	// status is 400, identifier is '400', code is 'CLUSTERS-MGMT-400' and operation identifier is '<id>': Please make sure IAM role 'arn:aws:iam::<ocm_role_aws_id>:role/ManagedOpenShift-Installer-Role' exists, and add 'arn:aws:iam::<id>:role/RH-Managed-OpenShift-Installer' to the trust policy on IAM role 'arn:aws:iam::<id>:role/ManagedOpenShift-Installer-Role': Failed to assume role: User: arn:aws:sts::<id>:assumed-role/RH-Managed-OpenShift-Installer/OCM is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::<customer_aws_id>:role/ManagedOpenShift-Installer-Role
-	".*RH-Managed-OpenShift-Installer/OCM is not authorized to perform: sts:AssumeRole on resource.*",
+	logging.Debug("Checking cluster state: ", clusterState)
 
-	// Customer deleted the support role, e.g.:
-	// status is 404, identifier is '404', code is 'CLUSTERS-MGMT-404' and operation identifier is '<id>': Support role, used with cluster '<cluster_id>', does not exist in the customer's AWS account
-	".*Support role, used with cluster '[a-z0-9]{32}', does not exist in the customer's AWS account.*",
-
-	// This error is the response from backplane calls when:
-	// trust policy of ManagedOpenShift-Support-Role is changed
-	".*could not assume support role in customer's account: .*AccessDenied:.*",
-
-	// Customer removed the `GetRole` permission from the Installer role.
-	// Failed to get role: User: arn:aws:sts::<id>:assumed-role/ManagedOpenShift-Installer-Role/OCM is not authorized to perform: iam:GetRole on resource: role ManagedOpenShift-Support-Role because no identity-based policy allows the iam:GetRole action
-	".*is not authorized to perform: iam:GetRole on resource: role.*",
-}
-
-func customerRemovedPermissions(backplaneError string) bool {
-	for _, str := range userCausedErrors {
-		re, err := regexp.Compile(str)
-		if err != nil {
-			// This should never happen on production as we would run into it during unit tests
-			log.Fatal("failed to regexp.Compile string in `userCausedErrors`")
+	switch clusterState {
+	case cmv1.ClusterStateReady:
+		// Cluster is in functional state but we can't jumprole to it: post limited support
+		actions = []types.Action{
+			executor.NewLimitedSupportAction(ccamLimitedSupport.Summary, ccamLimitedSupport.Details, "CCAM").Build(),
+			executor.Silence("Cluster credentials are missing - limited support added"),
 		}
-
-		if re.MatchString(backplaneError) {
-			return true
+	case cmv1.ClusterStateUninstalling:
+		// A cluster in uninstalling state should not alert primary - we just skip this
+		actions = []types.Action{
+			executor.Silence(fmt.Sprintf("Skipped adding limited support reason '%s': cluster is already uninstalling", ccamLimitedSupport.Summary)),
+		}
+	default:
+		// Anything else is an unknown state to us and/or requires investigation.
+		// E.g. we land here if we run into a CPD alert where credentials were removed (installing state) and don't want to put it in LS yet.
+		actions = []types.Action{
+			executor.Escalate(fmt.Sprintf("Cluster has invalid cloud credentials (support role/policy is missing) and the cluster is in state '%s'. Please investigate.", clusterState)),
 		}
 	}
 
-	return false
+	return actions
 }
