@@ -21,6 +21,7 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/utils/tarball"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
+	"github.com/openshift/configuration-anomaly-detection/pkg/metrics"
 	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 	"github.com/openshift/configuration-anomaly-detection/pkg/utils"
@@ -47,6 +48,8 @@ const (
 	sftpCredentialOverallTimeout = 2 * time.Minute
 	sftpUploadOverallTimeout     = time.Hour * 6
 
+	productNameClassic = "ROSA classic"
+	productNameHCP     = "ROSA HCP"
 )
 
 // getAcmHcpMustGatherImage returns the ACM HCP must-gather image to use.
@@ -84,8 +87,10 @@ func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.St
 	}()
 
 	mustGatherCommandFlags := []string{fmt.Sprintf("--dest-dir=%v", mustGatherResultDir)}
+	productName := productNameClassic
 
 	if r.IsHCP {
+		productName = productNameHCP
 		err = waitForMustGatherNamespaceDeletion(context.Background(), r.ManagementK8sClient, mustGatherWaitTimeout, mustGatherPollInterval)
 		if err != nil {
 			logging.Errorf("CAD was unable to proceed with must-gather. Error: %v", err)
@@ -177,6 +182,7 @@ func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.St
 	}
 
 	r.Notes.AppendAutomation("CAD collected a must-gather and uploaded it to the Red Hat SFTP server under /anonymous/users/%s/%s", username, path.Base(tarfile.Name()))
+	metrics.Inc(metrics.MustGatherPerformed, s.Name(), productName)
 	result.Actions = executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name())
 	return result, nil
 }

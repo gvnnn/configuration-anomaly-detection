@@ -60,6 +60,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 	if err != nil {
 		r.Notes.AppendWarning("Failed to determine if cluster is HCP: %v", err)
 		logging.Warnf("failed to check if cluster is HCP: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "hcp_check_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to determine cluster type - manual investigation required"),
@@ -93,6 +94,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 		}
 		r.Notes.AppendWarning("Failed to take etcd snapshot: %v", err)
 		logging.Errorf("failed to take etcd snapshot: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "snapshot_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to take etcd snapshot - manual investigation required"),
@@ -121,6 +123,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 		}
 		r.Notes.AppendWarning("Failed to create analysis job: %v", err)
 		logging.Errorf("failed to create analysis job: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "analysis_job_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to create analysis job - manual investigation required"),
@@ -137,6 +140,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 		}
 		r.Notes.AppendWarning("Analysis job failed or timed out: %v", err)
 		logging.Errorf("analysis job failed: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "analysis_job_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Analysis job failed or timed out - manual investigation required"),
@@ -153,6 +157,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 		}
 		r.Notes.AppendWarning("Failed to retrieve analysis results: %v", err)
 		logging.Errorf("failed to get job logs: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "parse_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to retrieve analysis results - manual investigation required"),
@@ -164,6 +169,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 	if err != nil {
 		r.Notes.AppendWarning("Failed to parse analysis results: %v", err)
 		logging.Errorf("failed to parse analysis output: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "parse_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to parse analysis results - manual investigation required"),
@@ -174,6 +180,7 @@ func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.
 	formattedResults := formatAnalysisResults(analysisResult)
 
 	logging.Info("etcd snapshot analysis completed successfully")
+	metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "success", "completed")
 
 	// Create backplane report action
 	backplaneReportAction := &executor.BackplaneReportAction{
@@ -218,6 +225,7 @@ func (s *Step) runHCPEtcdAnalysis(ctx context.Context, pc *pipeline.PipelineCont
 		}
 		r.Notes.AppendWarning("Failed to get etcd pod: %v", err)
 		logging.Errorf("failed to get etcd pod: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "etcd_not_found")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to get etcd pod - manual investigation required"),
@@ -229,6 +237,7 @@ func (s *Step) runHCPEtcdAnalysis(ctx context.Context, pc *pipeline.PipelineCont
 	if err != nil {
 		r.Notes.AppendWarning("Etcdctl container image not found")
 		logging.Errorf("Etcdctl container image not found")
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "etcdctl_container_image_not_found")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to find etcdctl container image - manual investigation required"),
@@ -247,6 +256,7 @@ func (s *Step) runHCPEtcdAnalysis(ctx context.Context, pc *pipeline.PipelineCont
 	if err != nil {
 		r.Notes.AppendWarning("Failed to build analysis job: %v", err)
 		logging.Errorf("Failed to build analysis job: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "analysis_job_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to build analysis job - manual investigation required"),
@@ -261,6 +271,7 @@ func (s *Step) runHCPEtcdAnalysis(ctx context.Context, pc *pipeline.PipelineCont
 		}
 		r.Notes.AppendWarning("Failed to create analysis job: %v", err)
 		logging.Errorf("failed to create analysis job: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "analysis_job_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to create analysis job - manual investigation required"),
@@ -289,6 +300,7 @@ func (s *Step) runHCPEtcdAnalysis(ctx context.Context, pc *pipeline.PipelineCont
 		}
 		r.Notes.AppendWarning("Analysis job failed or timed out: %v", err)
 		logging.Errorf("analysis job failed: %v", err)
+		metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "failure", "analysis_job_failed")
 		result.Actions = append(
 			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Analysis job failed or timed out - manual investigation required"),
@@ -296,6 +308,7 @@ func (s *Step) runHCPEtcdAnalysis(ctx context.Context, pc *pipeline.PipelineCont
 		return result, nil
 	}
 
+	metrics.Inc(metrics.EtcdDatabaseAnalysis, s.Name(), "success", "completed")
 	result.Actions = append(
 		executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("HCP etcd analysis complete - see dynatrace logs for details"),

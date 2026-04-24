@@ -9,6 +9,7 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
 	investigation "github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
+	"github.com/openshift/configuration-anomaly-detection/pkg/metrics"
 	"github.com/openshift/configuration-anomaly-detection/pkg/networkverifier"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
@@ -102,8 +103,6 @@ func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.St
 				notes.AppendWarning("subnet %s does not have a default route to 0.0.0.0/0", subnet)
 				byovpcRoutingSL := newBYOVPCRoutingSL(docLink)
 
-				// XXX: metrics.Inc(metrics.ServicelogSent, investigationName)
-
 				notes.AppendAutomation("Sent SL: '%s'", byovpcRoutingSL.Summary)
 
 				result.Actions = append(
@@ -130,7 +129,7 @@ func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.St
 	switch verifierResult {
 	case networkverifier.Failure:
 		logging.Infof("Network verifier reported failure: %s", failureReason)
-		// XXX: metrics.Inc(metrics.ServicelogPrepared, investigationName)
+		metrics.Inc(metrics.ServicelogPrepared, s.Name())
 		notes.AppendWarning("NetworkVerifier found unreachable targets. \n \n Verify and send service log if necessary: \n osdctl servicelog post --cluster-id %s -t https://raw.githubusercontent.com/openshift/managed-notifications/master/osd/required_network_egresses_are_blocked.json -p URLS=\"%s\"", r.Cluster.ID(), failureReason)
 	case networkverifier.Success:
 		notes.AppendSuccess("Network verifier passed")
