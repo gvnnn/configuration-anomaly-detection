@@ -44,8 +44,7 @@ type Step struct {
 // The machine object is evaluated first, as it represents a lower-level object that could affect the health of the node.
 // If the investigation determines that the breakage is occurring at the machine-level, the corresponding node is *not* investigated.
 // After investigating all affected machines, potentially affected nodes are investigated.
-func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
-	ctx := context.Background()
+func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
 	result := pipeline.StepResult{}
 	r, err := pc.ResourceBuilder.WithK8sClient().WithCluster().WithNotes().Build()
 	if err != nil {

@@ -42,7 +42,7 @@ func generateSessionID(incidentID string) string {
 	return fmt.Sprintf("cad-%s-%d-%s", incidentID, timestamp, randomHex)
 }
 
-func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+func (s *Step) Run(ctx context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
 	result := pipeline.StepResult{}
 
 	// Build resources
@@ -115,7 +115,7 @@ func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.St
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 	defer cancel()
 
 	// Create AWS config directly without LoadDefaultConfig
