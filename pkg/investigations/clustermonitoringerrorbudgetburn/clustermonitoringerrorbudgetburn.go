@@ -11,6 +11,7 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 	"k8s.io/apimachinery/pkg/fields"
@@ -61,10 +62,10 @@ func newUwmGenericMisconfiguredSL(docLink string) *ocm.ServiceLog {
 
 const available = "Available"
 
-type Investigation struct{}
+type Step struct{}
 
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (result investigation.InvestigationResult, err error) {
-	r, err := rb.WithK8sClient().Build()
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (result pipeline.StepResult, err error) {
+	r, err := pc.ResourceBuilder.WithK8sClient().Build()
 	if err != nil {
 		if msg, ok := investigation.ClusterAccessErrorMessage(err); ok {
 			result.Actions = []types.Action{
@@ -93,7 +94,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (result investigat
 	if len(coList.Items) != 1 {
 		notes.AppendWarning("Found %d monitoring clusteroperators, expected 1", len(coList.Items))
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Unexpected monitoring clusteroperator count - manual investigation required"),
 		)
 		return result, nil
@@ -110,7 +111,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (result investigat
 		configMapSL := newUwmConfigMapMisconfiguredSL(monitoringDocLink)
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.NewServiceLogAction(configMapSL.Severity, configMapSL.Summary).
 				WithDescription(configMapSL.Description).
 				WithServiceName(configMapSL.ServiceName).
@@ -125,7 +126,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (result investigat
 		alertManagerSL := newUwmAMMisconfiguredSL(monitoringDocLink)
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.NewServiceLogAction(alertManagerSL.Severity, alertManagerSL.Summary).
 				WithDescription(alertManagerSL.Description).
 				WithServiceName(alertManagerSL.ServiceName).
@@ -140,7 +141,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (result investigat
 		genericSL := newUwmGenericMisconfiguredSL(monitoringDocLink)
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.NewServiceLogAction(genericSL.Severity, genericSL.Summary).
 				WithDescription(genericSL.Description).
 				WithServiceName(genericSL.ServiceName).
@@ -154,26 +155,14 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (result investigat
 	// Escalate the alert with our findings.
 	notes.AppendSuccess("Monitoring CO not degraded due to UWM misconfiguration")
 	result.Actions = append(
-		executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+		executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("Monitoring CO not degraded due to UWM misconfiguration - manual investigation required"),
 	)
 	return result, nil
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "clustermonitoringerrorbudgetburn"
-}
-
-func (c *Investigation) AlertTitle() string {
-	return "ClusterMonitoringErrorBudgetBurnSRE"
-}
-
-func (c *Investigation) Description() string {
-	return "Investigation to analyze a ClusterMonitoringErrorBudgetBurnSRE alert"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	return false
 }
 
 // Check if the `Available` status condition reports a broken UWM config

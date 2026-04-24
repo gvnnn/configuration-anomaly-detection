@@ -2,17 +2,16 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strconv"
 
 	"github.com/openshift/configuration-anomaly-detection/pkg/aiconfig"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations"
-	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/aiassisted"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
 	"github.com/openshift/configuration-anomaly-detection/pkg/pagerduty"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 )
 
 type PagerDutyController struct {
@@ -25,31 +24,37 @@ type PagerDutyController struct {
 func (c *PagerDutyController) Investigate(ctx context.Context) error {
 	experimentalEnabledVar := os.Getenv("CAD_EXPERIMENTAL_ENABLED")
 	experimentalEnabled, _ := strconv.ParseBool(experimentalEnabledVar)
-	alertInvestigation := investigations.GetInvestigation(c.pdClient.GetTitle(), experimentalEnabled)
 
 	clusterID, err := c.pdClient.RetrieveClusterID()
 	if err != nil {
 		return err
 	}
 
-	// Update logger with cluster ID now that we have it
 	c.logger = logging.InitLogger(c.config.LogLevel, c.config.Identifier, clusterID)
 	c.logger.Infof("Investigating incident '%s' for service '%s (%s)'", c.pdClient.GetIncidentRef(), c.pdClient.GetServiceID(), c.pdClient.GetServiceName())
 
-	// Check if we should escalate to AI or not
-	if experimentalEnabled {
-		alertInvestigation = handleUnsupportedAlertWithAI(alertInvestigation, c.pdClient)
-		if alertInvestigation == nil {
-			err := c.pdClient.EscalateIncident()
-			if err != nil {
-				return fmt.Errorf("could not escalate unsupported alert: %w", err)
+	pipelineDef := investigations.GetPipeline(c.pdClient.GetTitle(), experimentalEnabled)
+
+	// AI fallback for unmatched alerts
+	if pipelineDef == nil && experimentalEnabled {
+		aiConfig, _ := aiconfig.ParseAIAgentConfig()
+		if aiConfig != nil && aiConfig.Enabled {
+			pipelineDef = &pipeline.Pipeline{
+				Name: "aiassisted",
+				Steps: []pipeline.StepConfig{
+					{Name: "precheck"},
+					{Name: "aiassisted"},
+				},
 			}
-			return nil
 		}
 	}
 
-	// Continue with investigation...
-	return c.runInvestigation(ctx, clusterID, alertInvestigation, c.pdClient)
+	if pipelineDef == nil {
+		c.logger.Infof("No pipeline for incident %s, escalating", c.pdClient.GetIncidentRef())
+		return c.pdClient.EscalateIncident()
+	}
+
+	return c.runPipeline(ctx, clusterID, *pipelineDef, c.pdClient)
 }
 
 func escalateDocumentationMismatch(docErr *ocm.DocumentationMismatchError, resources *investigation.Resources, pdClient *pagerduty.SdkClient) {
@@ -71,28 +76,4 @@ func escalateDocumentationMismatch(docErr *ocm.DocumentationMismatchError, resou
 	}
 
 	logging.Info("Escalated documentation mismatch to PagerDuty")
-}
-
-// handleUnsupportedAlertWithAI checks if AI is enabled for unsupported alerts.
-// If AI is enabled, returns an AI investigation. If disabled, escalates the alert.
-// Returns errAlertEscalated if the alert was escalated.
-func handleUnsupportedAlertWithAI(alertInvestigation investigation.Investigation, pdClient *pagerduty.SdkClient) investigation.Investigation {
-	if alertInvestigation != nil {
-		return alertInvestigation
-	}
-
-	// Parse AI config
-	aiConfig, err := aiconfig.ParseAIAgentConfig()
-	if err != nil {
-		aiConfig = &aiconfig.AIAgentConfig{Enabled: false}
-		logging.Warnf("Failed to parse AI agent configuration, disabling AI investigation: %v", err)
-	}
-
-	// Escalate if AI is disabled
-	if !aiConfig.Enabled {
-		return nil
-	}
-
-	// Use AI investigation for unsupported alerts
-	return &aiassisted.Investigation{}
 }

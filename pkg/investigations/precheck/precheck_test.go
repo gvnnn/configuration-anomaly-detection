@@ -1,6 +1,7 @@
 package precheck
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -9,8 +10,10 @@ import (
 	investigation "github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	ocmmock "github.com/openshift/configuration-anomaly-detection/pkg/ocm/mock"
 	pdmock "github.com/openshift/configuration-anomaly-detection/pkg/pagerduty/mock"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
 )
 
 func TestInvestigation_Run(t *testing.T) {
@@ -19,21 +22,21 @@ func TestInvestigation_Run(t *testing.T) {
 	}
 	tests := []struct {
 		name       string
-		c          *ClusterStatePrecheck
+		c          *Step
 		args       args
-		want       investigation.InvestigationResult
+		want       pipeline.StepResult
 		wantErr    bool
 		setupMocks func(*gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster)
 	}{
 		{
 			name: "cloud provider unsupported stops investigation and escalates the alert",
-			c:    &ClusterStatePrecheck{},
-			want: investigation.InvestigationResult{
+			c:    &Step{},
+			want: pipeline.StepResult{
 				Actions: []types.Action{
 					executor.Note("CAD could not run an automated investigation on this cluster: unsupported cloud provider."),
 					executor.Escalate("CAD could not run an automated investigation on this cluster: unsupported cloud provider."),
 				},
-				StopInvestigations: errors.New("unsupported cloud provider (non-AWS)"),
+				StopPipeline: true,
 			},
 			wantErr: false,
 			setupMocks: func(ctrl *gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster) {
@@ -49,13 +52,13 @@ func TestInvestigation_Run(t *testing.T) {
 		},
 		{
 			name: "cluster is uninstalling stops investigation and silences the alert",
-			c:    &ClusterStatePrecheck{},
-			want: investigation.InvestigationResult{
+			c:    &Step{},
+			want: pipeline.StepResult{
 				Actions: []types.Action{
 					executor.Note("CAD: Cluster is already uninstalling, silencing alert."),
 					executor.Silence("CAD: Cluster is already uninstalling, silencing alert."),
 				},
-				StopInvestigations: errors.New("cluster is already uninstalling"),
+				StopPipeline: true,
 			},
 			wantErr: false,
 			setupMocks: func(ctrl *gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster) {
@@ -71,13 +74,13 @@ func TestInvestigation_Run(t *testing.T) {
 		},
 		{
 			name: "access protection status unknown escalates",
-			c:    &ClusterStatePrecheck{},
-			want: investigation.InvestigationResult{
+			c:    &Step{},
+			want: pipeline.StepResult{
 				Actions: []types.Action{
 					executor.Note("CAD could not determine access protection status for this cluster, as CAD is unable to run against access protected clusters, please investigate manually."),
 					executor.Escalate("CAD could not determine access protection status for this cluster, as CAD is unable to run against access protected clusters, please investigate manually."),
 				},
-				StopInvestigations: errors.New("access protection could not be determined"),
+				StopPipeline: true,
 			},
 			wantErr: false,
 			setupMocks: func(ctrl *gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster) {
@@ -96,13 +99,13 @@ func TestInvestigation_Run(t *testing.T) {
 		},
 		{
 			name: "access protection enabled escalates",
-			c:    &ClusterStatePrecheck{},
-			want: investigation.InvestigationResult{
+			c:    &Step{},
+			want: pipeline.StepResult{
 				Actions: []types.Action{
 					executor.Note("CAD is unable to run against access protected clusters. Please investigate."),
 					executor.Escalate("CAD is unable to run against access protected clusters. Please investigate."),
 				},
-				StopInvestigations: errors.New("cluster is access protected"),
+				StopPipeline: true,
 			},
 			wantErr: false,
 			setupMocks: func(ctrl *gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster) {
@@ -121,8 +124,8 @@ func TestInvestigation_Run(t *testing.T) {
 		},
 		{
 			name:    "access protection disabled continues investigation",
-			c:       &ClusterStatePrecheck{},
-			want:    investigation.InvestigationResult{StopInvestigations: nil},
+			c:       &Step{},
+			want:    pipeline.StepResult{StopPipeline: false},
 			wantErr: false,
 			setupMocks: func(ctrl *gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster) {
 				pdClient := pdmock.NewMockClient(ctrl)
@@ -140,13 +143,13 @@ func TestInvestigation_Run(t *testing.T) {
 		},
 		{
 			name: "cloud provider unsupported stops investigation",
-			c:    &ClusterStatePrecheck{},
-			want: investigation.InvestigationResult{
+			c:    &Step{},
+			want: pipeline.StepResult{
 				Actions: []types.Action{
 					executor.Note("CAD could not run an automated investigation on this cluster: unsupported cloud provider."),
 					executor.Escalate("CAD could not run an automated investigation on this cluster: unsupported cloud provider."),
 				},
-				StopInvestigations: errors.New("unsupported cloud provider (non-AWS)"),
+				StopPipeline: true,
 			},
 			setupMocks: func(ctrl *gomock.Controller) (*pdmock.MockClient, *ocmmock.MockClient, *cmv1.Cluster) {
 				pdClient := pdmock.NewMockClient(ctrl)
@@ -168,7 +171,7 @@ func TestInvestigation_Run(t *testing.T) {
 
 			pdClient, ocmClient, cluster := tt.setupMocks(mockCtrl)
 
-			tt.args.rb = &investigation.ResourceBuilderMock{
+			mockBuilder := &investigation.ResourceBuilderMock{
 				Resources: &investigation.Resources{
 					Cluster:   cluster,
 					OcmClient: ocmClient,
@@ -176,30 +179,32 @@ func TestInvestigation_Run(t *testing.T) {
 				},
 			}
 
-			c := &ClusterStatePrecheck{}
-			got, err := c.Run(tt.args.rb)
+			pc := &pipeline.PipelineContext{
+				ResourceBuilder: mockBuilder,
+				Logger:          zap.NewNop().Sugar(),
+				StepResults:     make(map[string]pipeline.StepResult),
+			}
+
+			step := &Step{}
+			got, err := step.Run(context.Background(), pc)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Investigation.Run() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("Step.Run() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
-			// Check StopInvestigations error
-			if tt.want.StopInvestigations != nil {
-				if got.StopInvestigations == nil || got.StopInvestigations.Error() != tt.want.StopInvestigations.Error() {
-					t.Errorf("Investigation.Run() StopInvestigations = %v, want %v", got.StopInvestigations, tt.want.StopInvestigations)
-				}
-			} else if got.StopInvestigations != nil {
-				t.Errorf("Investigation.Run() StopInvestigations = %v, want nil", got.StopInvestigations)
+			// Check StopPipeline
+			if got.StopPipeline != tt.want.StopPipeline {
+				t.Errorf("Step.Run() StopPipeline = %v, want %v", got.StopPipeline, tt.want.StopPipeline)
 			}
 
 			// Check Actions
 			if len(tt.want.Actions) != len(got.Actions) {
-				t.Errorf("Investigation.Run() Actions length = %d, want %d", len(got.Actions), len(tt.want.Actions))
+				t.Errorf("Step.Run() Actions length = %d, want %d", len(got.Actions), len(tt.want.Actions))
 				return
 			}
 			for i, wantAction := range tt.want.Actions {
 				if got.Actions[i].Type() != wantAction.Type() {
-					t.Errorf("Investigation.Run() Actions[%d].Type() = %s, want %s", i, got.Actions[i].Type(), wantAction.Type())
+					t.Errorf("Step.Run() Actions[%d].Type() = %s, want %s", i, got.Actions[i].Type(), wantAction.Type())
 				}
 			}
 		})

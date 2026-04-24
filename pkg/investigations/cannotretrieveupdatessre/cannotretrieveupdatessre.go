@@ -1,6 +1,7 @@
 package cannotretrieveupdatessre
 
 import (
+	"context"
 	"fmt"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -9,16 +10,17 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/networkverifier"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/utils/version"
 )
 
-type Investigation struct{}
+type Step struct{}
 
 // Run executes the investigation for the CannotRetrieveUpdatesSRE alert
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
-	r, err := rb.WithAwsClient().WithClusterDeployment().Build()
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
+	r, err := pc.ResourceBuilder.WithAwsClient().WithClusterDeployment().Build()
 	if err != nil {
 		return result, err
 	}
@@ -31,19 +33,18 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	} else {
 		switch verifierResult {
 		case networkverifier.Failure:
-			result.ServiceLogPrepared = investigation.InvestigationStep{Performed: true, Labels: nil}
 			notes.AppendWarning("NetworkVerifier found unreachable targets. \n \n Verify and send service log if necessary: \n osdctl servicelog post --cluster-id %s -t https://raw.githubusercontent.com/openshift/managed-notifications/master/osd/required_network_egresses_are_blocked.json -p URLS=%s", r.Cluster.ID(), failureReason)
 		case networkverifier.Success:
 			notes.AppendSuccess("Network verifier passed")
 		}
 	}
 
-	r, err = rb.WithK8sClient().Build()
+	r, err = pc.ResourceBuilder.WithK8sClient().Build()
 	if err != nil {
 		if msg, ok := investigation.ClusterAccessErrorMessage(err); ok {
 			notes.AppendWarning("%s", msg)
 			result.Actions = append(
-				executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+				executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 				executor.Escalate(msg),
 			)
 			return result, nil
@@ -67,7 +68,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	}
 	notes.AppendWarning("Alert escalated to on-call primary for review and please check the ClusterVersion.")
 	result.Actions = append(
-		executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+		executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("CannotRetrieveUpdatesSRE investigation completed - manual review required"),
 	)
 	return result, nil
@@ -94,18 +95,6 @@ func checkCondition(condition configv1.ClusterOperatorStatusCondition) (string, 
 	return "", false
 }
 
-func (i *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "cannotretrieveupdatessre"
-}
-
-func (i *Investigation) AlertTitle() string {
-	return "CannotRetrieveUpdatesSRE"
-}
-
-func (i *Investigation) Description() string {
-	return fmt.Sprintf("Investigates '%s' alerts by running network verifier and checking ClusterVersion", i.Name())
-}
-
-func (i *Investigation) IsExperimental() bool {
-	return true
 }

@@ -1,10 +1,13 @@
 package ccam
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	investigation "github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
+	"go.uber.org/zap"
 )
 
 func TestEvaluateRandomError(t *testing.T) {
@@ -20,9 +23,14 @@ func TestEvaluateRandomError(t *testing.T) {
 		BuildError: timeoutError,
 	}
 
-	inv := CloudCredentialsCheck{}
+	step := Step{}
 
-	_, err := inv.Run(&input)
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: &input,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
+	_, err := step.Run(context.Background(), pc)
 	if err.Error() != timeoutError.Error() {
 		t.Fatalf("Expected error %v, but got %v", timeoutError, err)
 	}

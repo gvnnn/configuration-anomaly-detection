@@ -13,7 +13,9 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
+	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ktypes "k8s.io/apimachinery/pkg/types"
@@ -42,45 +44,35 @@ func hasBackplaneReportAction(actions []types.Action) bool {
 	return hasActionType(actions, string(executor.ActionTypeBackplaneReport))
 }
 
-func TestInvestigation_Name(t *testing.T) {
-	inv := &Investigation{}
-	assert.Equal(t, "restartcontrolplane", inv.Name())
+func TestStep_Name(t *testing.T) {
+	step := &Step{}
+	assert.Equal(t, "restartcontrolplane", step.Name())
 }
 
-func TestInvestigation_AlertTitle(t *testing.T) {
-	inv := &Investigation{}
-	assert.Equal(t, "RestartControlPlane", inv.AlertTitle())
-}
-
-func TestInvestigation_Description(t *testing.T) {
-	inv := &Investigation{}
-	assert.Equal(t, "restarts the control plane of an HCP cluster", inv.Description())
-}
-
-func TestInvestigation_IsExperimental(t *testing.T) {
-	inv := &Investigation{}
-	assert.False(t, inv.IsExperimental())
-}
-
-func TestInvestigation_Run_BuildError(t *testing.T) {
+func TestStep_Run_BuildError(t *testing.T) {
 	buildErr := errors.New("build failed")
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources:  nil,
 		BuildError: buildErr,
 	}
-	inv := &Investigation{}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
+	step := &Step{}
 
-	result, err := inv.Run(rb)
+	result, err := step.Run(context.Background(), pc)
 	assert.Empty(t, result)
 	assert.Error(t, err)
 	assert.Equal(t, buildErr, err)
 }
 
-func TestInvestigation_Run_NonHCPCluster(t *testing.T) {
+func TestStep_Run_NonHCPCluster(t *testing.T) {
 	cluster, err := cmv1.NewCluster().ID("test-123").Build()
 	require.NoError(t, err)
 
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			IsHCP:   false,
 			Cluster: cluster,
@@ -88,9 +80,14 @@ func TestInvestigation_Run_NonHCPCluster(t *testing.T) {
 		},
 		BuildError: nil,
 	}
-	inv := &Investigation{}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
+	step := &Step{}
 
-	result, err := inv.Run(rb)
+	result, err := step.Run(context.Background(), pc)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, result.Actions)
 
@@ -100,13 +97,13 @@ func TestInvestigation_Run_NonHCPCluster(t *testing.T) {
 	assert.True(t, hasBackplaneReportAction(result.Actions), "should have backplane report action")
 }
 
-func TestInvestigation_Run_GetHostedClusterFails(t *testing.T) {
+func TestStep_Run_GetHostedClusterFails(t *testing.T) {
 	cluster, err := cmv1.NewCluster().DomainPrefix("test-cluster").Build()
 	require.NoError(t, err)
 
 	// Fake client with no HostedCluster -> Get will return not found
 	fakeK8s := fake.NewClientBuilder().Build()
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			IsHCP:               true,
 			HCNamespace:         "clusters-test-cluster",
@@ -115,9 +112,14 @@ func TestInvestigation_Run_GetHostedClusterFails(t *testing.T) {
 		},
 		BuildError: nil,
 	}
-	inv := &Investigation{}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
+	step := &Step{}
 
-	result, err := inv.Run(rb)
+	result, err := step.Run(context.Background(), pc)
 	assert.Empty(t, result)
 	assert.Error(t, err)
 	var infraErr investigation.InfrastructureError
@@ -126,7 +128,7 @@ func TestInvestigation_Run_GetHostedClusterFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "Restarting Control Plane failed")
 }
 
-func TestInvestigation_Run_Success(t *testing.T) {
+func TestStep_Run_Success(t *testing.T) {
 	cluster, err := cmv1.NewCluster().DomainPrefix("test-cluster").Build()
 	require.NoError(t, err)
 
@@ -144,7 +146,7 @@ func TestInvestigation_Run_Success(t *testing.T) {
 	hc.SetName(domainPrefix)
 
 	fakeK8s := fake.NewClientBuilder().WithObjects(hc).Build()
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			IsHCP:               true,
 			HCNamespace:         hcNamespace,
@@ -153,11 +155,16 @@ func TestInvestigation_Run_Success(t *testing.T) {
 		},
 		BuildError: nil,
 	}
-	inv := &Investigation{}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
+	step := &Step{}
 
-	result, err := inv.Run(rb)
+	result, err := step.Run(context.Background(), pc)
 	assert.NoError(t, err)
-	assert.Empty(t, result.StopInvestigations)
+	assert.False(t, result.StopPipeline)
 
 	// Verify HostedCluster was updated with restart-date annotation
 	updated := &unstructured.Unstructured{}

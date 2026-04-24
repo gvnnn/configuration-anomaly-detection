@@ -1,6 +1,7 @@
 package aiassisted
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -16,9 +17,11 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	ocmmock "github.com/openshift/configuration-anomaly-detection/pkg/ocm/mock"
 	pdmock "github.com/openshift/configuration-anomaly-detection/pkg/pagerduty/mock"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
 	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
 )
 
 func TestAiassisted(t *testing.T) {
@@ -92,7 +95,7 @@ var _ = Describe("aiassisted", func() {
 		mockCtrl.Finish()
 	})
 
-	inv := Investigation{}
+	step := Step{}
 
 	Describe("Run", func() {
 		Context("when AI configuration is not set", func() {
@@ -103,8 +106,13 @@ var _ = Describe("aiassisted", func() {
 			})
 
 			It("should escalate with configuration warning", func() {
+				pc := &pipeline.PipelineContext{
+					ResourceBuilder: r,
+					Logger:          zap.NewNop().Sugar(),
+					StepResults:     make(map[string]pipeline.StepResult),
+				}
 				// By default, CAD_AI_AGENT_CONFIG env var is not set in tests
-				result, err := inv.Run(r)
+				result, err := step.Run(context.Background(), pc)
 
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Actions).NotTo(BeEmpty())
@@ -130,7 +138,12 @@ var _ = Describe("aiassisted", func() {
 			})
 
 			It("should escalate with disabled warning", func() {
-				result, err := inv.Run(r)
+				pc := &pipeline.PipelineContext{
+					ResourceBuilder: r,
+					Logger:          zap.NewNop().Sugar(),
+					StepResults:     make(map[string]pipeline.StepResult),
+				}
+				result, err := step.Run(context.Background(), pc)
 
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Actions).NotTo(BeEmpty())
@@ -159,7 +172,12 @@ var _ = Describe("aiassisted", func() {
 			})
 
 			It("should escalate with organization error", func() {
-				result, err := inv.Run(r)
+				pc := &pipeline.PipelineContext{
+					ResourceBuilder: r,
+					Logger:          zap.NewNop().Sugar(),
+					StepResults:     make(map[string]pipeline.StepResult),
+				}
+				result, err := step.Run(context.Background(), pc)
 
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Actions).NotTo(BeEmpty())
@@ -190,7 +208,12 @@ var _ = Describe("aiassisted", func() {
 			})
 
 			It("should escalate with allowlist error", func() {
-				result, err := inv.Run(r)
+				pc := &pipeline.PipelineContext{
+					ResourceBuilder: r,
+					Logger:          zap.NewNop().Sugar(),
+					StepResults:     make(map[string]pipeline.StepResult),
+				}
+				result, err := step.Run(context.Background(), pc)
 
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Actions).NotTo(BeEmpty())
@@ -221,7 +244,12 @@ var _ = Describe("aiassisted", func() {
 			})
 
 			It("should escalate with allowlist error", func() {
-				result, err := inv.Run(r)
+				pc := &pipeline.PipelineContext{
+					ResourceBuilder: r,
+					Logger:          zap.NewNop().Sugar(),
+					StepResults:     make(map[string]pipeline.StepResult),
+				}
+				result, err := step.Run(context.Background(), pc)
 
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Actions).NotTo(BeEmpty())

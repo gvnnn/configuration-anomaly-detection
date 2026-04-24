@@ -16,6 +16,8 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
+	"go.uber.org/zap"
 )
 
 func TestIsHCPCluster(t *testing.T) {
@@ -73,24 +75,12 @@ func TestIsHCPCluster(t *testing.T) {
 	}
 }
 
-func TestInvestigationMethods(t *testing.T) {
-	inv := &Investigation{}
+func TestStepMethods(t *testing.T) {
+	step := &Step{}
 
 	t.Run("Name", func(t *testing.T) {
 		expected := "etcddatabasequotalowspace"
-		got := inv.Name()
-		assert.Equal(t, expected, got)
-	})
-
-	t.Run("AlertTitle", func(t *testing.T) {
-		expected := "etcdDatabaseQuotaLowSpace"
-		got := inv.AlertTitle()
-		assert.Equal(t, expected, got)
-	})
-
-	t.Run("Description", func(t *testing.T) {
-		expected := "Takes etcd snapshots and performs database analysis for etcd quota issues"
-		got := inv.Description()
+		got := step.Name()
 		assert.Equal(t, expected, got)
 	})
 }
@@ -275,7 +265,7 @@ func TestRunHCPEtcdAnalysis_Success(t *testing.T) {
 		}
 	}()
 
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			Cluster:                       cluster,
 			ManagementK8sClient:           fakeK8s,
@@ -285,18 +275,20 @@ func TestRunHCPEtcdAnalysis_Success(t *testing.T) {
 			Notes:                         notewriter.New("etcddatabasequotalowspace_test", logging.RawLogger),
 		},
 	}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
 
-	inv := &Investigation{}
-	result, err := inv.runHCPEtcdAnalysis(ctx, rb)
+	step := &Step{}
+	result, err := step.runHCPEtcdAnalysis(ctx, pc)
 
 	assert.NoError(t, err)
-	assert.True(t, result.EtcdDatabaseAnalysis.Performed)
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "success")
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "completed")
 	assert.Len(t, result.Actions, 3) // NoteAndReportFrom (2 actions) + Escalate (1 action)
 
 	// Verify Dynatrace URL appears in notes
-	notesContent := rb.Resources.Notes.String()
+	notesContent := mockBuilder.Resources.Notes.String()
 	assert.Contains(t, notesContent, "Dynatrace Logs:")
 	assert.Contains(t, notesContent, "https://hrm15629.apps.dynatrace.com/")
 	assert.Contains(t, notesContent, "ui/apps/dynatrace.logs/#")
@@ -314,7 +306,7 @@ func TestRunHCPEtcdAnalysis_NoEtcdPod(t *testing.T) {
 	// Create fake client with no etcd pods
 	fakeK8s := fake.NewClientBuilder().Build()
 
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			Cluster:             cluster,
 			ManagementK8sClient: fakeK8s,
@@ -322,14 +314,17 @@ func TestRunHCPEtcdAnalysis_NoEtcdPod(t *testing.T) {
 			Notes:               notewriter.New("etcddatabasequotalowspace_test", logging.RawLogger),
 		},
 	}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
 
-	inv := &Investigation{}
-	result, err := inv.runHCPEtcdAnalysis(context.TODO(), rb)
+	step := &Step{}
+	result, err := step.runHCPEtcdAnalysis(context.TODO(), pc)
 
 	assert.NoError(t, err)
-	assert.True(t, result.EtcdDatabaseAnalysis.Performed)
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "failure")
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "etcd_not_found")
+	assert.NotEmpty(t, result.Actions)
 }
 
 func TestRunHCPEtcdAnalysis_NoRunningEtcdPod(t *testing.T) {
@@ -355,7 +350,7 @@ func TestRunHCPEtcdAnalysis_NoRunningEtcdPod(t *testing.T) {
 
 	fakeK8s := fake.NewClientBuilder().WithObjects(etcdPod).Build()
 
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			Cluster:             cluster,
 			ManagementK8sClient: fakeK8s,
@@ -363,14 +358,17 @@ func TestRunHCPEtcdAnalysis_NoRunningEtcdPod(t *testing.T) {
 			Notes:               notewriter.New("etcddatabasequotalowspace_test", logging.RawLogger),
 		},
 	}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
 
-	inv := &Investigation{}
-	result, err := inv.runHCPEtcdAnalysis(context.TODO(), rb)
+	step := &Step{}
+	result, err := step.runHCPEtcdAnalysis(context.TODO(), pc)
 
 	assert.NoError(t, err)
-	assert.True(t, result.EtcdDatabaseAnalysis.Performed)
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "failure")
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "etcd_not_found")
+	assert.NotEmpty(t, result.Actions)
 }
 
 func TestRunHCPEtcdAnalysis_MissingResetMemberContainer(t *testing.T) {
@@ -404,7 +402,7 @@ func TestRunHCPEtcdAnalysis_MissingResetMemberContainer(t *testing.T) {
 
 	fakeK8s := fake.NewClientBuilder().WithObjects(etcdPod).Build()
 
-	rb := &investigation.ResourceBuilderMock{
+	mockBuilder := &investigation.ResourceBuilderMock{
 		Resources: &investigation.Resources{
 			Cluster:             cluster,
 			ManagementK8sClient: fakeK8s,
@@ -412,12 +410,15 @@ func TestRunHCPEtcdAnalysis_MissingResetMemberContainer(t *testing.T) {
 			Notes:               notewriter.New("etcddatabasequotalowspace_test", logging.RawLogger),
 		},
 	}
+	pc := &pipeline.PipelineContext{
+		ResourceBuilder: mockBuilder,
+		Logger:          zap.NewNop().Sugar(),
+		StepResults:     make(map[string]pipeline.StepResult),
+	}
 
-	inv := &Investigation{}
-	result, err := inv.runHCPEtcdAnalysis(context.TODO(), rb)
+	step := &Step{}
+	result, err := step.runHCPEtcdAnalysis(context.TODO(), pc)
 
 	assert.NoError(t, err)
-	assert.True(t, result.EtcdDatabaseAnalysis.Performed)
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "failure")
-	assert.Contains(t, result.EtcdDatabaseAnalysis.Labels, "etcdctl_container_image_not_found")
+	assert.NotEmpty(t, result.Actions)
 }

@@ -2,6 +2,7 @@
 package cpd
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/openshift/configuration-anomaly-detection/pkg/aws"
@@ -11,9 +12,10 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/networkverifier"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 )
 
-type Investigation struct{}
+type Step struct{}
 
 // https://raw.githubusercontent.com/openshift/managed-notifications/master/osd/aws/InstallFailed_NoRouteToInternet.json
 func newBYOVPCRoutingSL(docLink string) *ocm.ServiceLog {
@@ -40,9 +42,9 @@ func newBYOVPCRoutingSL(docLink string) *ocm.ServiceLog {
 // - always escalate the alert to primary
 // The reasoning for this is that we don't fully trust network verifier yet.
 // In the future, we want to automate service logs based on the network verifier output.
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
-	r, err := rb.WithClusterDeployment().WithAwsClient().Build()
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
+	r, err := pc.ResourceBuilder.WithClusterDeployment().WithAwsClient().Build()
 	if err != nil {
 		return result, err
 	}
@@ -55,7 +57,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		notes.AppendWarning("This cluster is in a ready state, thus provisioning succeeded. Please contact CAD team to investigate if we can just silence this case in the future")
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Cluster ready but alert fired - CAD team investigation required"),
 		)
 		return result, nil
@@ -68,7 +70,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		notes.AppendWarning("This cluster has an empty ClusterDeployment.Spec.ClusterMetadata, meaning that the provisioning failed before the installation started. This is usually the case when the install configuration is faulty. Please investigate manually.")
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("ClusterDeployment.Spec.ClusterMetadata empty - faulty install configuration"),
 		)
 		return result, nil
@@ -79,7 +81,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if !r.Cluster.Status().DNSReady() {
 		notes.AppendWarning("DNS not ready.\nInvestigate reasons using the dnszones CR in the cluster namespace:\noc get dnszones -n uhc-production-%s -o yaml --as backplane-cluster-admin", r.Cluster.ID())
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Cluster DNS not ready"),
 		)
 		return result, nil
@@ -101,12 +103,11 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 				byovpcRoutingSL := newBYOVPCRoutingSL(docLink)
 
 				// XXX: metrics.Inc(metrics.ServicelogSent, investigationName)
-				result.ServiceLogSent = investigation.InvestigationStep{Performed: true, Labels: nil}
 
 				notes.AppendAutomation("Sent SL: '%s'", byovpcRoutingSL.Summary)
 
 				result.Actions = append(
-					executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+					executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 					executor.NewServiceLogAction(byovpcRoutingSL.Severity, byovpcRoutingSL.Summary).
 						WithDescription(byovpcRoutingSL.Description).
 						WithServiceName(byovpcRoutingSL.ServiceName).
@@ -130,7 +131,6 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	case networkverifier.Failure:
 		logging.Infof("Network verifier reported failure: %s", failureReason)
 		// XXX: metrics.Inc(metrics.ServicelogPrepared, investigationName)
-		result.ServiceLogPrepared = investigation.InvestigationStep{Performed: true, Labels: nil}
 		notes.AppendWarning("NetworkVerifier found unreachable targets. \n \n Verify and send service log if necessary: \n osdctl servicelog post --cluster-id %s -t https://raw.githubusercontent.com/openshift/managed-notifications/master/osd/required_network_egresses_are_blocked.json -p URLS=\"%s\"", r.Cluster.ID(), failureReason)
 	case networkverifier.Success:
 		notes.AppendSuccess("Network verifier passed")
@@ -139,26 +139,14 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	// We currently always escalate, in the future, when network verifier is reliable,
 	// we would silence the alert when we had a service log in the case of network verifier detecting failures.
 	result.Actions = append(
-		executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+		executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("ClusterProvisioningDelay - manual investigation required"),
 	)
 	return result, nil
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "ClusterProvisioningDelay"
-}
-
-func (c *Investigation) AlertTitle() string {
-	return "ClusterProvisioningDelay -"
-}
-
-func (c *Investigation) Description() string {
-	return "Investigates the ClusterProvisioningDelay alert"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	return false
 }
 
 func isSubnetRouteValid(awsClient aws.Client, subnetID string) (bool, error) {

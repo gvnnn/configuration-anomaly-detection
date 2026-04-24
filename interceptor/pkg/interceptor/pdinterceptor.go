@@ -189,10 +189,10 @@ func (pdi *interceptorHandler) process(ctx context.Context, r *triggersv1.Interc
 	experimentalEnabledVar := os.Getenv("CAD_EXPERIMENTAL_ENABLED")
 	cadExperimentalEnabled, _ := strconv.ParseBool(experimentalEnabledVar)
 
-	investigation := investigations.GetInvestigation(pdClient.GetTitle(), cadExperimentalEnabled)
+	pipelineDef := investigations.GetPipeline(pdClient.GetTitle(), cadExperimentalEnabled)
 
 	// If no formal investigation found, check if AI investigation should run
-	if investigation == nil {
+	if pipelineDef == nil {
 		if shouldRunAIInvestigation(pdClient, ocmClient) {
 			logging.Infof("Launching AI investigation")
 			return &triggersv1.InterceptorResponse{Continue: true}
@@ -207,7 +207,7 @@ func (pdi *interceptorHandler) process(ctx context.Context, r *triggersv1.Interc
 		return &triggersv1.InterceptorResponse{Continue: false}
 	}
 
-	logging.Infof("Incident %s is mapped to investigation '%s', returning InterceptorResponse `Continue: true`.", pdClient.GetIncidentID(), investigation.Name())
+	logging.Infof("Incident %s is mapped to pipeline '%s', returning InterceptorResponse `Continue: true`.", pdClient.GetIncidentID(), pipelineDef.Name)
 	return &triggersv1.InterceptorResponse{
 		Continue: true,
 	}

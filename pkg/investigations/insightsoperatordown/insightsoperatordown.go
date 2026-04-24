@@ -12,15 +12,16 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/networkverifier"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"k8s.io/apimachinery/pkg/fields"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type Investigation struct{}
+type Step struct{}
 
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
-	r, err := rb.WithClusterDeployment().WithAwsClient().Build()
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
+	r, err := pc.ResourceBuilder.WithClusterDeployment().WithAwsClient().Build()
 	if err != nil {
 		return result, err
 	}
@@ -30,7 +31,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if err != nil {
 		notes.AppendWarning("encountered an issue when checking if the cluster owner is banned: %s", err)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to check user ban status - manual investigation required"),
 		)
 		return result, nil
@@ -39,7 +40,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if user.Banned() {
 		notes.AppendWarning("User is banned: %s\nBan description: %s\nPlease open a proactive case, so that MCS can resolve the ban or organize a ownership transfer.", user.BanCode(), user.BanDescription())
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("User is banned - proactive case required"),
 		)
 		return result, nil
@@ -47,12 +48,12 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		notes.AppendSuccess("User is not banned.")
 	}
 
-	r, err = rb.WithK8sClient().Build()
+	r, err = pc.ResourceBuilder.WithK8sClient().Build()
 	if err != nil {
 		if msg, ok := investigation.ClusterAccessErrorMessage(err); ok {
 			notes.AppendWarning("%s", msg)
 			result.Actions = append(
-				executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+				executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 				executor.Escalate(msg),
 			)
 			return result, nil
@@ -72,7 +73,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if len(coList.Items) != 1 {
 		notes.AppendWarning("Found %d insights clusteroperators, expected 1", len(coList.Items))
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Unexpected insights clusteroperator count - manual investigation required"),
 		)
 		return result, nil
@@ -82,7 +83,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if isOCPBUG22226(&co) {
 		notes.AppendWarning("Found symptom of OCPBUGS-22226. Try deleting the insights operator pod to remediate.\n$ oc -n openshift-insights delete pods -l app=insights-operator --wait=false")
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("OCPBUGS-22226 detected - manual remediation required"),
 		)
 		return result, nil
@@ -99,14 +100,13 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	switch verifierResult {
 	case networkverifier.Failure:
 		logging.Infof("Network verifier reported failure: %s", failureReason)
-		result.ServiceLogPrepared = investigation.InvestigationStep{Performed: true, Labels: nil}
 		notes.AppendWarning("NetworkVerifier found unreachable targets. \n \n Verify and send service log if necessary: \n osdctl servicelog post --cluster-id %s -t https://raw.githubusercontent.com/openshift/managed-notifications/master/osd/required_network_egresses_are_blocked.json -p URLS=%s", r.Cluster.ID(), failureReason)
 	case networkverifier.Success:
 		notes.AppendSuccess("Network verifier passed")
 	}
 
 	result.Actions = append(
-		executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+		executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("InsightsOperatorDown investigation completed - manual review required"),
 	)
 	return result, nil
@@ -123,18 +123,6 @@ func isOCPBUG22226(co *configv1.ClusterOperator) bool {
 	return false
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "insightsoperatordown"
-}
-
-func (c *Investigation) AlertTitle() string {
-	return "InsightsOperatorDown"
-}
-
-func (c *Investigation) Description() string {
-	return "Investigate insights operator down alert"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	return false
 }

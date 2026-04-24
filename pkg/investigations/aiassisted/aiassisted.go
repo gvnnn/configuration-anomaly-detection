@@ -18,12 +18,12 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/aiconfig"
 	"github.com/openshift/configuration-anomaly-detection/pkg/aws"
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
-	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/pagerduty"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 )
 
-type Investigation struct{}
+type Step struct{}
 
 // InvestigationPayload represents the payload sent to the AgentCore agent
 type InvestigationPayload struct {
@@ -42,11 +42,11 @@ func generateSessionID(incidentID string) string {
 	return fmt.Sprintf("cad-%s-%d-%s", incidentID, timestamp, randomHex)
 }
 
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
 
 	// Build resources
-	r, err := rb.WithNotes().Build()
+	r, err := pc.ResourceBuilder.WithNotes().Build()
 	if err != nil {
 		return result, err
 	}
@@ -59,7 +59,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if err != nil {
 		notes.AppendWarning("Failed to parse AI agent configuration: %v", err)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("AI config parse error"),
 		)
 		return result, nil
@@ -68,7 +68,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if !config.Enabled {
 		notes.AppendWarning("AI investigation is disabled (CAD_AI_AGENT_CONFIG not configured or enabled=false)")
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("AI investigation disabled"),
 		)
 		return result, nil
@@ -78,7 +78,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if err != nil {
 		notes.AppendWarning("Failed to get organization ID: %v", err)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Failed to get organization ID"),
 		)
 		return result, nil
@@ -87,7 +87,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if !config.IsAllowedForAI(clusterID, orgID) {
 		notes.AppendWarning("Cluster %s (org: %s) is not in the AI investigation allowlist", clusterID, orgID)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Cluster not in AI allowlist"),
 		)
 		return result, nil
@@ -99,7 +99,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if awsAccessKeyID == "" {
 		notes.AppendWarning("Failed to get AGENTCORE_AWS_ACCESS_KEY_ID")
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Failed to get AGENTCORE_AWS_ACCESS_KEY_ID"),
 		)
 		return result, nil
@@ -108,7 +108,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if awsSecretAccessKey == "" {
 		notes.AppendWarning("Failed to get AGENTCORE_AWS_SECRET_ACCESS_KEY")
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Failed to get AGENTCORE_AWS_SECRET_ACCESS_KEY"),
 		)
 		return result, nil
@@ -130,7 +130,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if !ok {
 		notes.AppendWarning("Failed to access PagerDuty client details")
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Failed to access PagerDuty client"),
 		)
 		return result, nil
@@ -152,7 +152,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if err != nil {
 		notes.AppendWarning("Failed to marshal investigation payload: %v", err)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Failed to create investigation payload"),
 		)
 		return result, nil
@@ -184,7 +184,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if err != nil {
 		notes.AppendWarning("Failed to invoke AgentCore runtime: %v", err)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+			executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 			executor.Escalate("Failed to invoke AgentCore"),
 		)
 		return result, nil
@@ -233,26 +233,12 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 
 	// Return actions for executor to handle
 	result.Actions = append(
-		executor.NoteAndReportFrom(notes, clusterID, c.Name()),
+		executor.NoteAndReportFrom(notes, clusterID, s.Name()),
 		executor.Escalate("AI investigation completed - manual review required"),
 	)
 	return result, nil
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "aiassisted"
-}
-
-func (c *Investigation) AlertTitle() string {
-	// Return empty string - this investigation is used as a fallback, not for matching specific alert titles
-	return ""
-}
-
-func (c *Investigation) Description() string {
-	return "AI-powered investigation using AgentCore for unknown alerts"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	// TODO: Update to false when graduating to production
-	return true
 }

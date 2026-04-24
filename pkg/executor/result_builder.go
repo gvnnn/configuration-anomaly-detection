@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 )
@@ -79,14 +78,9 @@ func (b *ResultWithActionsBuilder) Escalate(reason string) *ResultWithActionsBui
 	return b
 }
 
-// Build creates the InvestigationResult
-func (b *ResultWithActionsBuilder) Build() investigation.InvestigationResult {
-	// Convert reporter.Action to types.Action
-	// They are the same type (alias), so we can just assign the slice
+// BuildActions returns the collected actions.
+func (b *ResultWithActionsBuilder) BuildActions() []types.Action {
 	invActions := make([]types.Action, len(b.actions))
 	copy(invActions, b.actions)
-
-	return investigation.InvestigationResult{
-		Actions: invActions,
-	}
+	return invActions
 }

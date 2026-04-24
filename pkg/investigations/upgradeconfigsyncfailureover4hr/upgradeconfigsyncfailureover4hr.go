@@ -2,6 +2,7 @@
 package upgradeconfigsyncfailureover4hr
 
 import (
+	"context"
 	"errors"
 
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
@@ -9,15 +10,16 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/pullsecret"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 )
 
-type Investigation struct{}
+type Step struct{}
 
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
-	r, err := rb.Build()
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
+	r, err := pc.ResourceBuilder.Build()
 	if err != nil {
 		return result, err
 	}
@@ -33,7 +35,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		notes.AppendWarning("%v", err)
 		result.Actions = append(
 			result.Actions,
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name())...,
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name())...,
 		)
 
 		result.Actions = append(
@@ -51,7 +53,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		notes.AppendWarning("Sending out Service Log (%s)", sl.Summary)
 		result.Actions = append(
 			result.Actions,
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name())...,
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name())...,
 		)
 
 		result.Actions = append(
@@ -67,7 +69,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		notes.AppendWarning("encountered an issue when checking if the cluster owner is banned: %s\nPlease investigate.", err)
 		result.Actions = append(
 			result.Actions,
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name())...,
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name())...,
 		)
 
 		result.Actions = append(
@@ -84,13 +86,13 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if err != nil {
 		notes.AppendWarning("Failed getting cluster creator from ocm: %s", err)
 		result.Actions = append(
-			executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Failed to get cluster creator from OCM"),
 		)
 		return result, nil
 	}
 
-	r, err = rb.WithK8sClient().Build()
+	r, err = pc.ResourceBuilder.WithK8sClient().Build()
 	if err != nil {
 		if msg, ok := investigation.ClusterAccessErrorMessage(err); ok {
 			result.Actions = []types.Action{
@@ -131,24 +133,12 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	}
 
 	result.Actions = append(
-		executor.NoteAndReportFrom(notes, r.Cluster.ID(), c.Name()),
+		executor.NoteAndReportFrom(notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("UpgradeConfigSyncFailure investigation complete"),
 	)
 	return result, nil
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "upgradeconfigsyncfailureover4hr"
-}
-
-func (c *Investigation) AlertTitle() string {
-	return "UpgradeConfigSyncFailureOver4HrSRE"
-}
-
-func (c *Investigation) Description() string {
-	return "Investigates the UpgradeConfigSyncFailureOver4hr alert"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	return false
 }

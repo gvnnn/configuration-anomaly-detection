@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestInvestigation_getMachinesFromFailingMHC(t *testing.T) {
+func TestStep_getMachinesFromFailingMHC(t *testing.T) {
 	// Test objects
 	mhc := newFailingMachineHealthCheck()
 
@@ -71,7 +71,7 @@ func TestInvestigation_getMachinesFromFailingMHC(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup test
-			i, err := newTestInvestigation(tt.objects...)
+			i, err := newTestStep(tt.objects...)
 			if err != nil {
 				t.Errorf("failed to create test investigation: %v", err)
 				return
@@ -81,7 +81,7 @@ func TestInvestigation_getMachinesFromFailingMHC(t *testing.T) {
 			got, err := i.getMachinesFromFailingMHC(context.TODO())
 			if err != nil {
 				// Never expect error on this test
-				t.Errorf("Investigation.getTargetMachines() error = %v, expected no error", err)
+				t.Errorf("Step.getTargetMachines() error = %v, expected no error", err)
 				return
 			}
 
@@ -98,7 +98,7 @@ func TestInvestigation_getMachinesFromFailingMHC(t *testing.T) {
 	}
 }
 
-func TestInvestigation_investigateFailingMachine(t *testing.T) {
+func TestStep_investigateFailingMachine(t *testing.T) {
 	// Test cases
 	type result struct {
 		err    bool
@@ -226,7 +226,7 @@ func TestInvestigation_investigateFailingMachine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup test
 			machine := tt.machine()
-			i, err := newTestInvestigation(machine)
+			i, err := newTestStep(machine)
 			if err != nil {
 				t.Errorf("failed to create test investigation: %v", err)
 			}
@@ -236,7 +236,7 @@ func TestInvestigation_investigateFailingMachine(t *testing.T) {
 
 			// Verify results
 			if (err != nil) != tt.want.err {
-				t.Errorf("unexpected result in Investigation.investigateFailingMachine(): wanted error = %t, returned err = %v", tt.want.err, err)
+				t.Errorf("unexpected result in Step.investigateFailingMachine(): wanted error = %t, returned err = %v", tt.want.err, err)
 			}
 
 			recs := i.recommendations[tt.want.action]
@@ -250,7 +250,7 @@ func TestInvestigation_investigateFailingMachine(t *testing.T) {
 	}
 }
 
-func TestInvestigation_investigateDeletingMachine(t *testing.T) {
+func TestStep_investigateDeletingMachine(t *testing.T) {
 	type result struct {
 		err    bool
 		action recommendedAction
@@ -313,7 +313,7 @@ func TestInvestigation_investigateDeletingMachine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup test
 			machine, node := tt.objects()
-			i, err := newTestInvestigation(machine, node)
+			i, err := newTestStep(machine, node)
 			if err != nil {
 				t.Errorf("failed to create test investigation: %v", err)
 			}
@@ -323,7 +323,7 @@ func TestInvestigation_investigateDeletingMachine(t *testing.T) {
 
 			// Verify results
 			if (err != nil) != tt.want.err {
-				t.Errorf("unexpected result in Investigation.investigateDeletingMachine(): wanted error = %t, returned err = %v", tt.want.err, err)
+				t.Errorf("unexpected result in Step.investigateDeletingMachine(): wanted error = %t, returned err = %v", tt.want.err, err)
 			}
 
 			recs := i.recommendations[tt.want.action]
@@ -427,7 +427,7 @@ func Test_checkForStuckDrain(t *testing.T) {
 	}
 }
 
-func TestInvestigation_InvestigateNode(t *testing.T) {
+func TestStep_InvestigateNode(t *testing.T) {
 	type result struct {
 		action recommendedAction
 		notes  string
@@ -496,7 +496,7 @@ func TestInvestigation_InvestigateNode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup test
 			node := tt.node()
-			i, err := newTestInvestigation(node)
+			i, err := newTestStep(node)
 			if err != nil {
 				t.Errorf("failed to create new test investigation: %v", err)
 			}
@@ -579,13 +579,13 @@ func (client clientImpl) Clean() error {
 	return nil
 }
 
-func newTestInvestigation(testObjects ...client.Object) (Investigation, error) {
+func newTestStep(testObjects ...client.Object) (Step, error) {
 	fakeClient, err := newFakeClient(testObjects...)
 	if err != nil {
-		return Investigation{}, err
+		return Step{}, err
 	}
 
-	i := Investigation{
+	i := Step{
 		k8scli:          clientImpl{fakeClient},
 		notes:           notewriter.New("testing", logging.RawLogger),
 		recommendations: investigationRecommendations{},

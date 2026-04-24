@@ -21,6 +21,7 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/utils/tarball"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 	"github.com/openshift/configuration-anomaly-detection/pkg/utils"
 )
@@ -46,9 +47,6 @@ const (
 	sftpCredentialOverallTimeout = 2 * time.Minute
 	sftpUploadOverallTimeout     = time.Hour * 6
 
-	// label for metrics
-	productNameClassic = "ROSA classic"
-	productNameHCP     = "ROSA HCP"
 )
 
 // getAcmHcpMustGatherImage returns the ACM HCP must-gather image to use.
@@ -60,17 +58,15 @@ func getAcmHcpMustGatherImage() string {
 	return defaultAcmHcpMustGatherImage
 }
 
-type Investigation struct{}
+type Step struct{}
 
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
 
-	r, err := rb.WithNotes().WithOC().WithManagementOCClient().WithManagementK8sClient().Build()
+	r, err := pc.ResourceBuilder.WithNotes().WithOC().WithManagementOCClient().WithManagementK8sClient().Build()
 	if err != nil {
 		return result, err
 	}
-
-	productName := productNameClassic
 
 	mustGatherResultDir, err := os.MkdirTemp("", mustGatherDirectoryPattern)
 	if err != nil {
@@ -90,7 +86,6 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	mustGatherCommandFlags := []string{fmt.Sprintf("--dest-dir=%v", mustGatherResultDir)}
 
 	if r.IsHCP {
-		productName = productNameHCP
 		err = waitForMustGatherNamespaceDeletion(context.Background(), r.ManagementK8sClient, mustGatherWaitTimeout, mustGatherPollInterval)
 		if err != nil {
 			logging.Errorf("CAD was unable to proceed with must-gather. Error: %v", err)
@@ -182,24 +177,12 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	}
 
 	r.Notes.AppendAutomation("CAD collected a must-gather and uploaded it to the Red Hat SFTP server under /anonymous/users/%s/%s", username, path.Base(tarfile.Name()))
-	result.MustGatherPerformed = investigation.InvestigationStep{Performed: true, Labels: []string{productName}}
-	result.Actions = executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), c.Name())
+	result.Actions = executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name())
 	return result, nil
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "mustgather"
-}
-
-func (c *Investigation) AlertTitle() string { return "CreateMustGather" }
-
-func (c *Investigation) Description() string {
-	return "creates a must gather for a cluster"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	// TODO: Update to false when graduating to production.
-	return false
 }
 
 // waitForMustGatherNamespaceDeletion waits for any existing openshift-must-gather-* namespace to be deleted

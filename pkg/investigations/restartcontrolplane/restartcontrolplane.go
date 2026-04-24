@@ -8,19 +8,20 @@ import (
 
 	"github.com/openshift/configuration-anomaly-detection/pkg/executor"
 	"github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 )
 
-type Investigation struct{}
+type Step struct{}
 
-func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
 
 	ctx := context.Background()
 
-	r, err := rb.WithCluster().WithManagementK8sClient().WithNotes().Build()
+	r, err := pc.ResourceBuilder.WithCluster().WithManagementK8sClient().WithNotes().Build()
 	if err != nil {
 		return result, err
 	}
@@ -29,7 +30,7 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	if !r.IsHCP {
 		r.Notes.AppendSuccess("Cluster is not an HCP cluster, skipping control plane restart")
 		result.Actions = append(
-			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), c.Name()),
+			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Silence("Control plane restart only applies to HCP clusters"),
 		)
 		return result, nil
@@ -77,16 +78,6 @@ func (c *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	return result, nil
 }
 
-func (c *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "restartcontrolplane"
-}
-
-func (c *Investigation) AlertTitle() string { return "RestartControlPlane" }
-
-func (c *Investigation) Description() string {
-	return "restarts the control plane of an HCP cluster"
-}
-
-func (c *Investigation) IsExperimental() bool {
-	return false
 }

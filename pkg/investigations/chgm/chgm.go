@@ -2,6 +2,7 @@
 package chgm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/openshift/configuration-anomaly-detection/pkg/networkverifier"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
 )
 
@@ -31,12 +33,12 @@ var (
 	}
 )
 
-type Investigation struct{}
+type Step struct{}
 
 // Run runs the investigation for a triggered chgm pagerduty event
-func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
-	r, err := rb.WithClusterDeployment().Build()
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
+	r, err := pc.ResourceBuilder.WithClusterDeployment().Build()
 	if err != nil {
 		return result, err
 	}
@@ -45,8 +47,8 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	// 1. Check if the user stopped instances
 	res, err := investigateStoppedInstances(r.Cluster, r.ClusterDeployment, r.AwsClient, r.OcmClient)
 	if err != nil {
-		// Check if this is a transient infrastructure error (AWS/OCM API failures)
-		// These should trigger a retry of the entire investigation (runInvestigationWithRetry)
+		// Check if this is a transient infrastructure error (AWS/OCM API failures).
+		// These should trigger a retry of the step.
 		if investigation.IsInfrastructureError(err) {
 			return result, err
 		}
@@ -55,7 +57,7 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		if investigation.IsFindingError(err) {
 			r.Notes.AppendWarning("Could not complete instance investigation: %s", err.Error())
 			result.Actions = append(
-				executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), i.Name()),
+				executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 				executor.Escalate("Investigation incomplete - manual review required"),
 			)
 			return result, nil
@@ -64,7 +66,7 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		// Unknown error type - escalate for manual investigation
 		r.Notes.AppendWarning("Unexpected error during instance investigation: %s", err.Error())
 		result.Actions = append(
-			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), i.Name()),
+			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("Investigation error - manual review required"),
 		)
 		return result, nil
@@ -76,7 +78,7 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		r.Notes.AppendAutomation("Customer stopped instances. Sent LS and silencing alert.")
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), i.Name()),
+			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.NewLimitedSupportAction(stoppedInfraLS.Summary, stoppedInfraLS.Details, "StoppedInstances").
 				Build(),
 			executor.Silence("Customer stopped instances - cluster in limited support"),
@@ -116,7 +118,7 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 			r.Notes.AppendAutomation("Egress `nosnch.in` blocked, sent limited support.")
 
 			result.Actions = append(
-				executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), i.Name()),
+				executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 				executor.NewLimitedSupportAction(egressLS.Summary, egressLS.Details, "EgressBlocked").
 					Build(),
 				executor.Silence("Deadman's snitch blocked - cluster in limited support"),
@@ -130,7 +132,7 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		r.Notes.AppendWarning("NetworkVerifier found unreachable targets and sent the SL, but deadmanssnitch is not blocked! \n⚠️ Please investigate this cluster.\nUnreachable: \n%s", failureReason)
 
 		result.Actions = append(
-			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), i.Name()),
+			executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 			executor.NewServiceLogAction(egressSL.Severity, egressSL.Summary).
 				WithDescription(egressSL.Description).
 				WithServiceName(egressSL.ServiceName).
@@ -146,26 +148,14 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	// Found no issues that CAD can handle by itself - forward notes to SRE.
 	// The report action will append to notes when executed, then note sends them to PagerDuty
 	result.Actions = append(
-		executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), i.Name()),
+		executor.NoteAndReportFrom(r.Notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("No automated remediation available - manual investigation required"),
 	)
 	return result, nil
 }
 
-func (i *Investigation) Name() string {
+func (s *Step) Name() string {
 	return "Cluster Has Gone Missing (CHGM)"
-}
-
-func (i *Investigation) AlertTitle() string {
-	return "has gone missing"
-}
-
-func (i *Investigation) Description() string {
-	return "Detects reason for clusters that have gone missing"
-}
-
-func (i *Investigation) IsExperimental() bool {
-	return false
 }
 
 // hasRecentlyResumed checks if the cluster was woken up from

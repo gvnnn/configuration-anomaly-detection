@@ -2,6 +2,7 @@
 package ccam
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -12,22 +13,25 @@ import (
 	investigation "github.com/openshift/configuration-anomaly-detection/pkg/investigations/investigation"
 	"github.com/openshift/configuration-anomaly-detection/pkg/logging"
 	"github.com/openshift/configuration-anomaly-detection/pkg/ocm"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 )
 
-type CloudCredentialsCheck struct{}
+type Step struct{}
 
 var ccamLimitedSupport = &ocm.LimitedSupportReason{
 	Summary: "Restore missing cloud credentials",
 	Details: "Your cluster requires you to take action because Red Hat is not able to access the infrastructure with the provided credentials. Please restore the credentials and permissions provided during install",
 }
 
-// Evaluates if the awsError is a cluster credentials are missing error. If it determines that it is,
+func (s *Step) Name() string { return "ccam" }
+
+// Run evaluates if the awsError is a cluster credentials are missing error. If it determines that it is,
 // the cluster is placed into limited support (if the cluster state allows it), otherwise an error is returned.
-func (c *CloudCredentialsCheck) Run(r investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
-	result := investigation.InvestigationResult{}
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
+	result := pipeline.StepResult{}
 	// Apart from the defaults this investigation requires an AWS client which can fail to build
-	resources, err := r.WithAwsClient().Build()
+	resources, err := pc.ResourceBuilder.WithAwsClient().Build()
 	logging.Info("Investigating possible missing cloud credentials...")
 	// Only an AWS error indicates that the permissions are incorrect - all other mean the resource build failed for other reasons
 	awsClientErr := &investigation.AWSClientError{}
@@ -35,18 +39,16 @@ func (c *CloudCredentialsCheck) Run(r investigation.ResourceBuilder) (investigat
 		logging.Debug("Inspecting AWS error")
 		if customerRemovedPermissions := customerRemovedPermissions(awsClientErr.Err.Error()); !customerRemovedPermissions {
 			// We aren't able to jumpRole because of an error that is different than
-			// a removed support role/policy or removed installer role/policy
+			// a removed support role/policy or removed installer role/policy.
 			// This would normally be a backplane failure.
 			logging.Debug("Unhandled AWS error: ", awsClientErr.Error())
 			return result, investigation.WrapInfrastructure(awsClientErr.Err, "AWS/Backplane infrastructure failure")
 		}
-		result.StopInvestigations = err
 		cluster := resources.Cluster
 
 		// The jumprole failed because of a missing support role/policy:
-		// we need to figure out if we cluster state allows us to set limited support
+		// we need to figure out if the cluster state allows us to set limited support
 		// (the cluster is in a ready state, not uninstalling, installing, etc.)
-
 		logging.Debug("Checking cluster state: ", cluster.State())
 		switch cluster.State() {
 		case cmv1.ClusterStateReady:

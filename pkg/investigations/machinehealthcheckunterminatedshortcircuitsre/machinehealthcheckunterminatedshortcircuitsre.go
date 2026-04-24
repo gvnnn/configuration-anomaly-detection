@@ -18,6 +18,7 @@ import (
 	nodeutil "github.com/openshift/configuration-anomaly-detection/pkg/investigations/utils/node"
 	k8sclient "github.com/openshift/configuration-anomaly-detection/pkg/k8s"
 	"github.com/openshift/configuration-anomaly-detection/pkg/notewriter"
+	"github.com/openshift/configuration-anomaly-detection/pkg/pipeline"
 	"github.com/openshift/configuration-anomaly-detection/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,7 +29,7 @@ const (
 	alertname = "MachineHealthCheckUnterminatedShortCircuitSRE"
 )
 
-type Investigation struct {
+type Step struct {
 	// k8scli provides access to on-cluster resources
 	k8scli k8sclient.Client
 	// notes holds the messages that will be shared with Primary upon completion
@@ -43,10 +44,10 @@ type Investigation struct {
 // The machine object is evaluated first, as it represents a lower-level object that could affect the health of the node.
 // If the investigation determines that the breakage is occurring at the machine-level, the corresponding node is *not* investigated.
 // After investigating all affected machines, potentially affected nodes are investigated.
-func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.InvestigationResult, error) {
+func (s *Step) Run(_ context.Context, pc *pipeline.PipelineContext) (pipeline.StepResult, error) {
 	ctx := context.Background()
-	result := investigation.InvestigationResult{}
-	r, err := rb.WithK8sClient().WithCluster().WithNotes().Build()
+	result := pipeline.StepResult{}
+	r, err := pc.ResourceBuilder.WithK8sClient().WithCluster().WithNotes().Build()
 	if err != nil {
 		if msg, ok := investigation.ClusterAccessErrorMessage(err); ok {
 			result.Actions = []types.Action{
@@ -58,26 +59,26 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 		return result, investigation.WrapInfrastructure(err, "Resource build error")
 	}
 
-	i.k8scli = r.K8sClient
-	i.notes = r.Notes
-	i.recommendations = investigationRecommendations{}
+	s.k8scli = r.K8sClient
+	s.notes = r.Notes
+	s.recommendations = investigationRecommendations{}
 
-	targetMachines, err := i.getMachinesFromFailingMHC(ctx)
+	targetMachines, err := s.getMachinesFromFailingMHC(ctx)
 	if err != nil {
-		i.notes.AppendWarning("failed to retrieve one or more target machines: %v", err)
+		s.notes.AppendWarning("failed to retrieve one or more target machines: %v", err)
 	}
 	if len(targetMachines) == 0 {
-		i.notes.AppendWarning("no machines found for short-circuited machinehealthcheck objects")
+		s.notes.AppendWarning("no machines found for short-circuited machinehealthcheck objects")
 		result.Actions = append(
-			executor.NoteAndReportFrom(i.notes, r.Cluster.ID(), i.Name()),
+			executor.NoteAndReportFrom(s.notes, r.Cluster.ID(), s.Name()),
 			executor.Escalate("No machines found for short-circuited MHC objects"),
 		)
 		return result, nil
 	}
 
-	problemMachines, err := i.InvestigateMachines(ctx, targetMachines)
+	problemMachines, err := s.InvestigateMachines(ctx, targetMachines)
 	if err != nil {
-		i.notes.AppendWarning("failed to investigate machines: %v", err)
+		s.notes.AppendWarning("failed to investigate machines: %v", err)
 	}
 
 	// Trim out the machines that we've already investigated and know have problems
@@ -96,32 +97,32 @@ func (i *Investigation) Run(rb investigation.ResourceBuilder) (investigation.Inv
 	// If one or more machines managed by the machinehealthcheck have not yet been identified as a problem, check on the machine's
 	// node to determine if there are node-level problems that need remediating
 	if len(targetMachines) > 0 {
-		targetNodes, err := machineutil.GetNodesForMachines(ctx, i.k8scli, targetMachines)
+		targetNodes, err := machineutil.GetNodesForMachines(ctx, s.k8scli, targetMachines)
 		if err != nil {
-			i.notes.AppendWarning("failed to retrieve one or more target nodes: %v", err)
+			s.notes.AppendWarning("failed to retrieve one or more target nodes: %v", err)
 		}
 		if len(targetNodes) > 0 {
-			i.InvestigateNodes(targetNodes)
+			s.InvestigateNodes(targetNodes)
 		}
 	}
 
 	// Summarize recommendations from investigation in PD notes, if any found
-	if len(i.recommendations) > 0 {
-		i.notes.AppendWarning("%s", i.recommendations.summarize())
+	if len(s.recommendations) > 0 {
+		s.notes.AppendWarning("%s", s.recommendations.summarize())
 	} else {
-		i.notes.AppendSuccess("no recommended actions to take against cluster")
+		s.notes.AppendSuccess("no recommended actions to take against cluster")
 	}
 
 	result.Actions = append(
-		executor.NoteAndReportFrom(i.notes, r.Cluster.ID(), i.Name()),
+		executor.NoteAndReportFrom(s.notes, r.Cluster.ID(), s.Name()),
 		executor.Escalate("MachineHealthCheck investigation complete"),
 	)
 	return result, nil
 }
 
-func (i *Investigation) getMachinesFromFailingMHC(ctx context.Context) ([]machinev1beta1.Machine, error) {
+func (s *Step) getMachinesFromFailingMHC(ctx context.Context) ([]machinev1beta1.Machine, error) {
 	healthchecks := machinev1beta1.MachineHealthCheckList{}
-	err := i.k8scli.List(ctx, &healthchecks, &client.ListOptions{Namespace: machineutil.MachineNamespace})
+	err := s.k8scli.List(ctx, &healthchecks, &client.ListOptions{Namespace: machineutil.MachineNamespace})
 	if err != nil {
 		return []machinev1beta1.Machine{}, investigation.WrapInfrastructure(
 			fmt.Errorf("failed to retrieve machinehealthchecks from cluster: %w", err),
@@ -131,9 +132,9 @@ func (i *Investigation) getMachinesFromFailingMHC(ctx context.Context) ([]machin
 	targets := []machinev1beta1.Machine{}
 	for _, healthcheck := range healthchecks.Items {
 		if !machineutil.HealthcheckRemediationAllowed(healthcheck) {
-			machines, err := machineutil.GetMachinesForMHC(ctx, i.k8scli, healthcheck)
+			machines, err := machineutil.GetMachinesForMHC(ctx, s.k8scli, healthcheck)
 			if err != nil {
-				i.notes.AppendWarning("failed to retrieve machines from machinehealthcheck %q: %v", healthcheck.Name, err)
+				s.notes.AppendWarning("failed to retrieve machines from machinehealthcheck %q: %v", healthcheck.Name, err)
 				continue
 			}
 			targets = append(targets, machines...)
@@ -145,12 +146,12 @@ func (i *Investigation) getMachinesFromFailingMHC(ctx context.Context) ([]machin
 
 // InvestigateMachines evaluates the state of the machines in the cluster and returns a list of the failing machines, along with a categorized set of recommendations based on the failure state of
 // each machine
-func (i *Investigation) InvestigateMachines(ctx context.Context, targets []machinev1beta1.Machine) ([]machinev1beta1.Machine, error) {
+func (s *Step) InvestigateMachines(ctx context.Context, targets []machinev1beta1.Machine) ([]machinev1beta1.Machine, error) {
 	investigatedMachines := []machinev1beta1.Machine{}
 	var errs error
 	for _, machine := range targets {
 		if machine.DeletionTimestamp != nil {
-			err := i.investigateDeletingMachine(ctx, machine)
+			err := s.investigateDeletingMachine(ctx, machine)
 			investigatedMachines = append(investigatedMachines, machine)
 			if err != nil {
 				errs = errors.Join(errs, fmt.Errorf("failed to investigate deleting machine: %w", err))
@@ -159,7 +160,7 @@ func (i *Investigation) InvestigateMachines(ctx context.Context, targets []machi
 		}
 
 		if (machine.Status.Phase != nil && *machine.Status.Phase == machinev1beta1.PhaseFailed) || machine.Status.ErrorReason != nil {
-			err := i.investigateFailingMachine(machine)
+			err := s.investigateFailingMachine(machine)
 			investigatedMachines = append(investigatedMachines, machine)
 			if err != nil {
 				errs = errors.Join(errs, fmt.Errorf("failed to investigate failing machine: %w", err))
@@ -168,18 +169,18 @@ func (i *Investigation) InvestigateMachines(ctx context.Context, targets []machi
 	}
 
 	if len(investigatedMachines) == 0 {
-		i.notes.AppendSuccess("no deleting or Failed machines found")
+		s.notes.AppendSuccess("no deleting or Failed machines found")
 	}
 	return investigatedMachines, errs
 }
 
 // investigateFailingMachin evaluates a machine whose .Status.Phase is failed, and provides a recommendation based on the cause of the failure
-func (i *Investigation) investigateFailingMachine(machine machinev1beta1.Machine) error {
+func (s *Step) investigateFailingMachine(machine machinev1beta1.Machine) error {
 	role, err := machineutil.GetRole(machine)
 	if err != nil {
 		// Failing to determine whether a machine is Red Hat-managed warrants manual investigation
 		notes := fmt.Sprintf("unable to determine machine role: %v", err)
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 		return fmt.Errorf("failed to determine role for machine %q: %w", machine.Name, err)
 	}
 
@@ -192,7 +193,7 @@ func (i *Investigation) investigateFailingMachine(machine machinev1beta1.Machine
 	if role != machineutil.WorkerRoleLabelValue {
 		// If machine is Red-Hat owned, always require manual investigation
 		notes := fmt.Sprintf("Red Hat-owned machine in terminal error state with message: %s", errorMsg)
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 		return nil
 	}
 
@@ -204,54 +205,54 @@ func (i *Investigation) investigateFailingMachine(machine machinev1beta1.Machine
 	switch errorReason {
 	case machinev1beta1.IPAddressInvalidReason:
 		notes := fmt.Sprintf("invalid IP address: %q. Deleting machine may allow the cloud provider to assign a valid IP address", errorMsg)
-		i.recommendations.addRecommendation(recommendationDeleteMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationDeleteMachine, machine.Name, notes)
 
 	case machinev1beta1.CreateMachineError:
 		notes := fmt.Sprintf("machine failed to create: %q. Deleting machine may resolve any transient issues with the cloud provider", errorMsg)
-		i.recommendations.addRecommendation(recommendationDeleteMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationDeleteMachine, machine.Name, notes)
 
 	case machinev1beta1.InvalidConfigurationMachineError:
 		notes := fmt.Sprintf("the machine configuration is invalid: %q. Checking splunk audit logs may indicate whether the customer has modified the machine or its machineset", errorMsg)
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 
 	case machinev1beta1.DeleteMachineError:
 		notes := fmt.Sprintf("the machine's node could not be gracefully terminated automatically: %q", errorMsg)
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 
 	case machinev1beta1.InsufficientResourcesMachineError:
 		notes := fmt.Sprintf("a servicelog should be sent because there is insufficient quota to provision the machine: %q", errorMsg)
-		i.recommendations.addRecommendation(recommendationQuotaServiceLog, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationQuotaServiceLog, machine.Name, notes)
 
 	default:
 		notes := "no .Status.ErrorReason found for machine"
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 	}
 	return nil
 }
 
 // InvestigateDeletingMachines evaluates machines which are being deleted, to determine if & why they are blocked, along with a recommendation on how to unblock them
-func (i *Investigation) investigateDeletingMachine(ctx context.Context, machine machinev1beta1.Machine) error {
+func (s *Step) investigateDeletingMachine(ctx context.Context, machine machinev1beta1.Machine) error {
 	if machine.Status.NodeRef == nil {
 		notes := "machine stuck deleting with no node"
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 		return nil
 	}
-	node, err := machineutil.GetNodeForMachine(ctx, i.k8scli, machine)
+	node, err := machineutil.GetNodeForMachine(ctx, s.k8scli, machine)
 	if err != nil {
 		notes := "machine's node could not be determined"
-		i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 		return fmt.Errorf("failed to retrieve node for machine %q: %w", machine.Name, err)
 	}
 
 	stuck, duration := checkForStuckDrain(node)
 	if stuck {
 		notes := fmt.Sprintf("node %q found to be stuck draining for %s", node.Name, duration.Truncate(time.Second).String())
-		i.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
 		return nil
 	}
 
 	notes := "unable to determine why machine is stuck deleting"
-	i.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
+	s.recommendations.addRecommendation(recommendationInvestigateMachine, machine.Name, notes)
 	return nil
 }
 
@@ -278,29 +279,29 @@ func checkForStuckDrain(node corev1.Node) (bool, *time.Duration) {
 }
 
 // InvestigateNodes examines the provided nodes and returns recommended actions, if any are needed
-func (i *Investigation) InvestigateNodes(nodes []corev1.Node) {
+func (s *Step) InvestigateNodes(nodes []corev1.Node) {
 	for _, node := range nodes {
-		i.InvestigateNode(node)
+		s.InvestigateNode(node)
 	}
 }
 
 // InvestigateNode examines a node and determines if further investigation is required
-func (i *Investigation) InvestigateNode(node corev1.Node) {
+func (s *Step) InvestigateNode(node corev1.Node) {
 	roleLabel, found := nodeutil.GetRole(node)
 	if !found {
 		notes := fmt.Sprintf("no role label containing %q found for node", nodeutil.RoleLabelPrefix)
-		i.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
 		return
 	} else if !strings.Contains(roleLabel, nodeutil.WorkerRoleSuffix) {
 		notes := "non-worker node affected"
-		i.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
 		return
 	}
 
 	ready, found := nodeutil.FindReadyCondition(node)
 	if !found {
 		notes := "found no 'Ready' .Status.Condition for the node"
-		i.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
 		return
 	}
 
@@ -311,22 +312,11 @@ func (i *Investigation) InvestigateNode(node corev1.Node) {
 			statusDesc = "NotReady"
 		}
 		notes := fmt.Sprintf("node has been in %s state for %s", statusDesc, lastCheckinElapsed)
-		i.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
+		s.recommendations.addRecommendation(recommendationInvestigateNode, node.Name, notes)
 	}
 }
 
-func (i *Investigation) Name() string {
+func (s *Step) Name() string {
 	return strings.ToLower(alertname)
 }
 
-func (i *Investigation) AlertTitle() string {
-	return alertname
-}
-
-func (i *Investigation) Description() string {
-	return fmt.Sprintf("Investigates '%s' alerts", alertname)
-}
-
-func (i *Investigation) IsExperimental() bool {
-	return false
-}
